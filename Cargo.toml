@@ -54,6 +54,7 @@ keyring = { version = "4", features = ["apple-native"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
 # UI framework (Zed's GPUI) — native, replaces Electron renderer
 gpui = "0.2"
+clap = { version = "4", features = ["derive"] }
 
 # internal crates (path deps so crates can reference each other)
 termius-core = { path = "crates/termius-core" }
@@ -66,6 +67,7 @@ termius-sync = { path = "crates/termius-sync" }
 termius-mosh = { path = "crates/termius-mosh" }
 termius-cloud = { path = "crates/termius-cloud" }
 termius-fido = { path = "crates/termius-fido" }
+termius-ui = { path = "crates/termius-ui" }
 
 [profile.dev]
 debug = 0
