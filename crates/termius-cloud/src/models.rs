@@ -128,7 +128,6 @@ pub struct Subscription {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListResponse<T> {
-    #[serde(default)]
     pub value: Vec<T>,
     /// Absolute URL of the next page; absent on the last page.
     #[serde(default)]

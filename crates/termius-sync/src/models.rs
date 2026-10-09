@@ -34,6 +34,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use termius_core::host::HostType;
 use termius_core::keychain::KeychainEntry;
 use termius_core::{Group, Host, Keychain, KnownHost, Snippet};
@@ -236,7 +237,17 @@ impl From<WireHost> for Host {
         // Resolve what we can from the (possibly nested) ssh_config relation
         // before moving out of `w`.
         let cfg = w.ssh_config.as_ref().and_then(Relation::as_nested);
-        let port = cfg.and_then(|c| c.port).unwrap_or(22);
+        let is_telnet = w.telnet_config.is_some();
+        let telnet_port = w
+            .telnet_config
+            .as_ref()
+            .and_then(Relation::as_nested)
+            .and_then(|c| c.port);
+        let port = if is_telnet {
+            telnet_port.unwrap_or(23)
+        } else {
+            cfg.and_then(|c| c.port).unwrap_or(22)
+        };
         let use_mosh = cfg.and_then(|c| c.use_mosh).unwrap_or(false);
         let identity_rel = cfg.and_then(|c| c.identity.as_ref());
         let identity_id = identity_rel.and_then(Relation::id);
@@ -289,8 +300,8 @@ impl From<WireHost> for Host {
             port_forwardings: Vec::new(),
             snippet_ids: Vec::new(),
             known_host_id: None,
-            created_at,
-            updated_at,
+            created_at: created_at.unwrap_or_default(),
+            updated_at: updated_at.unwrap_or_default(),
             notes: None,
         }
     }
@@ -417,8 +428,8 @@ impl From<WireGroup> for Group {
             // PORT-TODO: no `sort_order` in the recovered wire model —
             // Termius appears to order groups by `created_at`.
             sort_order: 0,
-            created_at,
-            updated_at,
+            created_at: created_at.unwrap_or_default(),
+            updated_at: updated_at.unwrap_or_default(),
         }
     }
 }
@@ -501,8 +512,8 @@ impl From<WireSnippet> for Snippet {
             host_ids: Vec::new(),
             command: None,
             sort_order: 0,
-            created_at,
-            updated_at,
+            created_at: created_at.unwrap_or_default(),
+            updated_at: updated_at.unwrap_or_default(),
         }
     }
 }
@@ -725,8 +736,8 @@ impl From<WireKeychain> for Keychain {
                     secret: e.secret,
                 })
                 .collect(),
-            created_at,
-            updated_at,
+            created_at: created_at.unwrap_or_default(),
+            updated_at: updated_at.unwrap_or_default(),
         }
     }
 }
@@ -910,7 +921,7 @@ impl HasWireId for WireIdentity {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DeleteSets {
     #[serde(flatten)]
-    pub sets: Map<String, Vec<String>>,
+    pub sets: BTreeMap<String, Vec<String>>,
 }
 
 impl DeleteSets {
@@ -1748,7 +1759,7 @@ mod tests {
 
     #[test]
     fn brand_config_tolerates_unknown_shape() {
-        let json = r#"{"name": "ACME", "brand_color": "#123456", "banner": {"img": "x"}}"#;
+        let json = r##"{"name": "ACME", "brand_color": "#123456", "banner": {"img": "x"}}"##;
         let brand: BrandConfig = serde_json::from_str(json).expect("brand");
         assert_eq!(brand.name.as_deref(), Some("ACME"));
         assert_eq!(brand.extra.get("brand_color"), Some(&json!("#123456")));

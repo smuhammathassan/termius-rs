@@ -32,6 +32,21 @@ impl SelectionMode {
     pub fn is_full_line(&self) -> bool {
         matches!(self, SelectionMode::Word | SelectionMode::Line | SelectionMode::All)
     }
+
+    /// Map onto the alacritty `SelectionType` used for text extraction.
+    ///
+    /// [`SelectionMode::All`] has no alacritty counterpart; callers build a
+    /// grid-spanning [`Lines`](alacritty_terminal::selection::SelectionType::Lines)
+    /// selection instead, so this returns `Lines` for it as well.
+    pub(crate) fn alacritty_type(&self) -> alacritty_terminal::selection::SelectionType {
+        match self {
+            SelectionMode::Char => alacritty_terminal::selection::SelectionType::Simple,
+            SelectionMode::Word => alacritty_terminal::selection::SelectionType::Semantic,
+            SelectionMode::Line | SelectionMode::All => {
+                alacritty_terminal::selection::SelectionType::Lines
+            },
+        }
+    }
 }
 
 /// A viewport cell coordinate (row 0 = top of the visible grid).

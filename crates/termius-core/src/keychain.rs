@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{RecordId, Timestamp};
 
 /// One secret slot inside a keychain, keyed by an owner label (e.g. a key id).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct KeychainEntry {
     /// Owner record this secret belongs to (key id, host id, …).

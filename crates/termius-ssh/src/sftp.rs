@@ -5,7 +5,7 @@
 //! mkdir / rename (plus `stat`). Result types are plain Rust structs so
 //! `termius-ssh` stays independent of `russh-sftp` protocol types.
 
-use russh_sftp::client::sftp::SftpSession;
+use russh_sftp::client::SftpSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::instrument;
 
@@ -40,10 +40,8 @@ pub struct SftpEntry {
 
 /// Metadata for a remote path.
 ///
-/// PORT-TODO: field extraction assumes `russh-sftp`'s `metadata()` returns a
-/// `FileAttributes`-style value with `size` / `permissions` fields that are
-/// `Option`s (the `.into()` conversions compile either way — only the field
-/// names are a bet on the 3.x surface).
+/// (russh-sftp 3.0.1: `metadata()` returns `FileAttributes`, whose `size` /
+/// `permissions` fields are `Option<u64>` / `Option<u32>`.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SftpStat {
     pub size: Option<u64>,
@@ -66,11 +64,11 @@ impl SftpStat {
 
 /// SFTP client bound to one session channel of an established SSH connection.
 ///
-/// PORT-TODO (russh-sftp 3.x surface): operation names below
-/// (`open` / `create` / `remove` / `create_dir` / `remove_dir` / `rename` /
-/// `metadata`) mirror the tokio::fs vocabulary the crate documents; any
-/// renamed operation is a one-line fix inside this impl. All errors are
-/// mapped through [`sftp_err`] so the concrete error type is never named.
+/// Backed by russh-sftp 3.0.1's `russh_sftp::client::SftpSession`; operation
+/// names inside the impl (`open` / `create` / `remove_file` / `create_dir` /
+/// `remove_dir` / `rename` / `metadata` / `read_dir`) are the verified 3.0.1
+/// surface. All errors are mapped through [`sftp_err`] so the concrete error
+/// type is never named.
 pub struct SftpClient {
     sftp: SftpSession,
 }
@@ -88,17 +86,13 @@ impl SftpClient {
     /// not carry attributes).
     #[instrument(skip_all, fields(path = %path))]
     pub async fn list(&self, path: &str) -> Result<Vec<SftpEntry>> {
-        // PORT-TODO: verify the russh-sftp 3.x client directory surface
-        // (`read_dir(path)` -> `ReadDir` with `next_entry()` / `file_name()`,
-        // mirroring `tokio::fs`) — names are our best-knowledge mapping.
-        let mut reader =
-            self.sftp.read_dir(path).await.map_err(sftp_err)?;
+        // russh-sftp 3.0.1: `read_dir` resolves to a `ReadDir`, a plain
+        // (synchronous) `Iterator` over `DirEntry`s that already skips
+        // `.` / `..`.
+        let reader = self.sftp.read_dir(path).await.map_err(sftp_err)?;
         let mut entries = Vec::new();
-        while let Some(entry) = reader.next_entry().await.map_err(sftp_err)? {
-            let name = entry.file_name().to_string();
-            if name == "." || name == ".." {
-                continue;
-            }
+        for entry in reader {
+            let name = entry.file_name();
             let full = join_path(path, &name);
             let stat = self.stat(&full).await.ok();
             entries.push(SftpEntry {
@@ -112,9 +106,11 @@ impl SftpClient {
 
     /// Stat a remote path.
     pub async fn stat(&self, path: &str) -> Result<SftpStat> {
+        // russh-sftp 3.0.1: `metadata` returns `FileAttributes`, whose
+        // `size` / `permissions` fields are already `Option`s.
         let attrs = self.sftp.metadata(path).await.map_err(sftp_err)?;
-        let size: Option<u64> = attrs.size.into();
-        let permissions: Option<u32> = attrs.permissions.into();
+        let size = attrs.size;
+        let permissions = attrs.permissions;
         let is_dir = permissions.map(|mode| mode & SftpStat::MODE_MASK == SftpStat::DIRECTORY_MODE);
         Ok(SftpStat { size, is_dir, permissions })
     }
@@ -145,7 +141,8 @@ impl SftpClient {
 
     /// Remove a remote file.
     pub async fn remove(&self, path: &str) -> Result<()> {
-        self.sftp.remove(path).await.map_err(sftp_err)
+        // russh-sftp 3.0.1 names the operation `remove_file` (not `remove`).
+        self.sftp.remove_file(path).await.map_err(sftp_err)
     }
 
     /// Create a remote directory.

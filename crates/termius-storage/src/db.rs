@@ -44,6 +44,12 @@ pub struct Store {
     conn: Mutex<Connection>,
 }
 
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store").finish_non_exhaustive()
+    }
+}
+
 impl Store {
     /// Open (creating parent directories as needed) the database at `path`,
     /// apply connection pragmas, and run pending migrations.

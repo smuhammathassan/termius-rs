@@ -132,11 +132,15 @@ pub fn delete_identity_password(identity_id: &str) -> Result<bool> {
 /// else (bad input, ambiguous match, encoding) is a per-operation access
 /// failure. The OS message is preserved; secrets never are.
 fn classify(operation: &str, err: keyring::Error) -> StorageError {
-    // PORT-TODO: variant names (`PlatformFailure`, `NoStorageAccess`) match
-    // the `keyring` 2.x/3.x `Error` layout and are assumed stable in 4.x; if
-    // CI fails to compile HERE only, adjust to the vendored keyring's enum.
+    // In `keyring` 3.x `PlatformFailure` wraps a boxed error while
+    // `NoStorageAccess` wraps a String, so they cannot share an or-pattern.
+    // Both mean "the OS keychain is unavailable"; everything else (bad input,
+    // ambiguous match, encoding, missing entry) is a per-operation failure.
     match &err {
-        keyring::Error::PlatformFailure(detail) | keyring::Error::NoStorageAccess(detail) => {
+        keyring::Error::PlatformFailure(detail) => {
+            StorageError::KeychainUnavailable(format!("{operation}: {detail}"))
+        }
+        keyring::Error::NoStorageAccess(detail) => {
             StorageError::KeychainUnavailable(format!("{operation}: {detail}"))
         }
         _ => StorageError::KeychainAccess(format!("{operation}: {err}")),

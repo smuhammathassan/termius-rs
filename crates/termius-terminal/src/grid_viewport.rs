@@ -16,11 +16,12 @@ use serde::{Deserialize, Serialize};
 
 use alacritty_terminal::{
     event::EventListener,
+    grid::Indexed,
     term::{
         cell::{Cell, Flags},
-        color::Color,
-        Term,
+        Term, TermMode,
     },
+    vte::ansi::{Color, CursorShape as AlacrittyCursorShape},
 };
 
 use termius_core::TerminalSize;
@@ -211,17 +212,22 @@ pub(crate) fn styled_from_cell(cell: &Cell) -> StyledCell {
         bold: cell.flags.contains(Flags::BOLD),
         dim: cell.flags.contains(Flags::DIM),
         italic: cell.flags.contains(Flags::ITALIC),
-        underline: cell.flags.contains(Flags::UNDERLINE),
-        strikethrough: cell.flags.contains(Flags::STRIKE_THROUGH),
+        // 0.26 has five underline variants (single/double/undercurl/dotted/
+        // dashed); the UI only distinguishes underlined vs not.
+        underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
+        strikethrough: cell.flags.contains(Flags::STRIKEOUT),
         reverse: cell.flags.contains(Flags::INVERSE),
         hidden: cell.flags.contains(Flags::HIDDEN),
-        blink: cell.flags.contains(Flags::BLINK),
+        // 0.26 dropped the blink flag entirely; keep the field for the UI
+        // contract but it is never set by the emulator.
+        blink: false,
         wide: cell.flags.contains(Flags::WIDE_CHAR),
         wide_spacer: cell.flags.contains(Flags::WIDE_CHAR_SPACER),
     };
 
-    let text = if flags.wide_spacer {
-        // Spacer cells carry no meaningful glyph.
+    let text = if flags.wide_spacer || *cell == Cell::default() {
+        // Spacer cells and untouched default cells carry no glyph; an
+        // explicit space written under styling keeps its " ".
         String::new()
     } else {
         cell.c.to_string()
@@ -240,17 +246,26 @@ pub(crate) fn styled_from_cell(cell: &Cell) -> StyledCell {
 
 fn map_color(color: Color) -> TerminalColor {
     match color {
-        Color::Specified(rgb) => TerminalColor::Rgb { r: rgb.r, g: rgb.g, b: rgb.b },
+        Color::Spec(rgb) => TerminalColor::Rgb { r: rgb.r, g: rgb.g, b: rgb.b },
         Color::Indexed(index) => TerminalColor::Indexed(index),
-        // Named colors (foreground/background/cursor) stay symbolic; the UI
-        // theme resolves them, mirroring xterm.js's `ITheme` indirection.
-        Color::Named(_) => TerminalColor::Default,
+        Color::Named(named) => {
+            // The first 16 `NamedColor`s are the ANSI palette (SGR 30–37 /
+            // 90–97), which xterm.js reports as palette indices; only the
+            // truly symbolic colors (foreground/background/cursor/dim…)
+            // stay symbolic for the UI theme to resolve.
+            let index = named as u32;
+            if index < 16 {
+                TerminalColor::Indexed(index as u8)
+            } else {
+                TerminalColor::Default
+            }
+        },
     }
 }
 
 /// Walk the alacritty grid's display iterator and assemble a [`GridSnapshot`].
 pub(crate) fn build_snapshot<T: EventListener>(
-    term: &mut Term<T>,
+    term: &Term<T>,
     size: TerminalSize,
     generation: u64,
 ) -> GridSnapshot {
@@ -258,28 +273,19 @@ pub(crate) fn build_snapshot<T: EventListener>(
     let rows = size.rows;
     let mut cells: Vec<Vec<StyledCell>> = vec![Vec::new(); rows as usize];
 
-    // The display iterator yields `(Point, &Cell)` for the visible viewport in
-    // grid-absolute line numbers; bucket rows relative to the topmost line.
-    // Two passes because the iterator is not guaranteed to start at the
-    // top-left cell (it may iterate column-major).
-    // PORT-TODO(alacritty_terminal 0.26): `Grid::display_iter()` has been
-    // `&self` in past versions; going through `grid_mut()` also compiles if it
-    // requires `&mut self`.
-    let mut top_line: Option<usize> = None;
-    for (point, _) in term.grid_mut().display_iter() {
-        let line = point.line.0;
-        top_line = Some(match top_line {
-            Some(t) if t < line => t,
-            _ => line,
-        });
-    }
-    let top_line = top_line.unwrap_or(0);
-    for (point, cell) in term.grid_mut().display_iter() {
-        let Some(row) = point.line.0.checked_sub(top_line) else { continue };
-        if row >= cells.len() {
+    // 0.26's `Grid::display_iter()` takes `&self` and yields
+    // `Indexed<&Cell>` (a `{ point, cell }` struct) for the visible
+    // viewport in grid-absolute line numbers; bucket rows relative to the
+    // topmost visible line (`-display_offset`).
+    let display_offset = term.grid().display_offset() as i32;
+    for Indexed { point, cell } in term.grid().display_iter() {
+        // Topmost visible line is `-display_offset`; rows above/below the
+        // viewport cannot occur but are skipped defensively.
+        let row = point.line.0 + display_offset;
+        if row < 0 || row as usize >= cells.len() {
             continue;
         }
-        cells[row].push(styled_from_cell(cell));
+        cells[row as usize].push(styled_from_cell(cell));
     }
 
     // Pad short rows so every row has `cols` entries (keeps UI math trivial).
@@ -292,36 +298,36 @@ pub(crate) fn build_snapshot<T: EventListener>(
 
     let cursor = cursor_state(term, size);
 
-    let alt_screen = term.mode().contains(alacritty_terminal::term::TermMode::ALTERNATE_SCREEN);
+    let alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
 
     GridSnapshot { cols, rows, cells, cursor, alt_screen, generation }
 }
 
 fn cursor_state<T: EventListener>(term: &Term<T>, size: TerminalSize) -> CursorState {
-    // PORT-TODO(alacritty_terminal 0.26): `Term::cursor() -> &Cursor` with
-    // public `point`/`shape`/`hidden` fields is the modern accessor; older
-    // versions exposed `cursor_point()` + `cursor_hidden()` + `cursor_style()`
-    // instead. Adjust here if the shape of `Cursor` differs.
-    let cursor = term.cursor();
-    let shape = match_cursor_shape(cursor.shape);
-    if cursor.hidden {
+    // 0.26 cursor state: the write cursor lives on the grid
+    // (`grid.cursor.point`, grid-absolute); visibility is `SHOW_CURSOR` in
+    // the term mode; the shape comes from `Term::cursor_style()`.
+    let shape = match_cursor_shape(term.cursor_style().shape);
+    if !term.mode().contains(TermMode::SHOW_CURSOR) {
         return CursorState { point: None, shape, visible: false };
     }
-    let row = cursor.point.line.0 as u16;
-    let col = cursor.point.col.0 as u16;
-    if row >= size.rows || col >= size.cols {
+    // The cursor is grid-absolute; translate to the viewport using the
+    // display offset and hide it when it scrolled out of view.
+    let cursor = term.grid().cursor.point;
+    let row = cursor.line.0 + term.grid().display_offset() as i32;
+    let col = cursor.column.0 as i32;
+    if row < 0 || row >= size.rows as i32 || col < 0 || col >= size.cols as i32 {
         return CursorState { point: None, shape, visible: false };
     }
-    CursorState { point: Some((row, col)), shape, visible: true }
+    CursorState { point: Some((row as u16, col as u16)), shape, visible: true }
 }
 
-#[allow(unreachable_patterns)]
-fn match_cursor_shape(shape: alacritty_terminal::term::cell::CursorShape) -> CursorShape {
-    use alacritty_terminal::term::cell::CursorShape as AlacrittyShape;
+fn match_cursor_shape(shape: AlacrittyCursorShape) -> CursorShape {
     match shape {
-        AlacrittyShape::Underline => CursorShape::Underline,
-        AlacrittyShape::Beam => CursorShape::Beam,
-        // Block plus any future shapes.
+        AlacrittyCursorShape::Underline => CursorShape::Underline,
+        AlacrittyCursorShape::Beam => CursorShape::Beam,
+        // Block, HollowBlock, Hidden → block presentation (Hidden is
+        // expressed through `visible`, not shape).
         _ => CursorShape::Block,
     }
 }

@@ -19,6 +19,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::BytesMut;
+use bytes::BufMut;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -90,7 +91,7 @@ impl TelnetClient {
             .await
             {
                 Ok(result) => result,
-                Err(_) => Err(TelnetError::timeout(target, params.connect_timeout_secs)),
+                Err(_) => Err(TelnetError::timeout(target.clone(), params.connect_timeout_secs)),
             }
         } else {
             connect_future.await

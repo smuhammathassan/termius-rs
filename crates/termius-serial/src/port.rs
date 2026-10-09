@@ -385,7 +385,7 @@ pub fn list_ports() -> Result<Vec<SerialPortInfo>> {
         .into_iter()
         .map(|info| {
             let (kind, usb) = match info.port_type {
-                serialport::SerialPortType::Usb(usb) => (PortKind::Usb, Some(usb)),
+                serialport::SerialPortType::UsbPort(usb) => (PortKind::Usb, Some(usb)),
                 // PORT-TODO: serialport 4.x also reports `Pci` and
                 // `Bluetooth` kinds; they fall through as `Unknown` here —
                 // Termius' dialog only ever displays `path`, and the wildcard
@@ -475,7 +475,7 @@ impl SerialConnection {
 
         let (ready_tx, ready_rx) = oneshot::channel::<Result<()>>();
         let (data_tx, data_rx) = mpsc::channel::<Result<Bytes>>(EVENT_CAPACITY);
-        let (cmd_tx, cmd_rx) = mpsc::channel::<ActorCmd>(CMD_CAPACITY);
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<ActorCmd>(CMD_CAPACITY);
         let closed = Arc::new(AtomicBool::new(false));
 
         let actor_path = path.clone();

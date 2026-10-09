@@ -224,8 +224,10 @@ impl ForwardingSet {
     }
 
     /// Stop every listener and in-flight tunnel task.
-    pub fn stop(self) {
-        for task in self.tasks {
+    pub fn stop(mut self) {
+        // A `Drop` impl exists, so move the tasks out via `drain` instead of
+        // consuming `self.tasks` directly.
+        for task in self.tasks.drain(..) {
             task.abort();
         }
     }
@@ -349,12 +351,12 @@ async fn shuttle(socket: TcpStream, shared: SharedHandle, dest: ShuttleDest) {
         }
     };
 
-    // PORT-TODO: `channel_direct_tcpip` argument types (`u16` vs wire `u32`)
-    // are hedged with `.into()`; verify the russh 0.64 signature.
+    // russh 0.64: `Handle::channel_open_direct_tcpip(host, port: u32,
+    // originator, originator_port: u32)`.
     let opened = {
-        let mut handle = shared.lock().await;
+        let handle = shared.lock().await;
         handle
-            .channel_direct_tcpip(dest_host.as_str(), dest_port.into(), "127.0.0.1", 0u16.into())
+            .channel_open_direct_tcpip(dest_host.as_str(), u32::from(dest_port), "127.0.0.1", 0)
             .await
     };
     let mut channel = match opened {
@@ -380,7 +382,7 @@ async fn shuttle(socket: TcpStream, shared: SharedHandle, dest: ShuttleDest) {
         // `select!` future-drop semantics.
         let event = tokio::select! {
             read = socket.read(&mut read_buf), if !socket_closed => PumpEvent::FromSocket(read),
-            msg = channel.recv() => PumpEvent::FromChannel(msg),
+            msg = channel.wait() => PumpEvent::FromChannel(msg),
         };
         match event {
             PumpEvent::FromSocket(Ok(0)) => {

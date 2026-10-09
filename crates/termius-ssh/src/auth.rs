@@ -5,11 +5,10 @@
 //! `auth(...)` with the same four shapes: none / password / OpenSSH-PEM
 //! private key (+ optional passphrase) / ssh-agent.
 
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use russh::client::{Handle, Handler};
+use russh::client::{AuthResult, Handle, Handler};
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
 use termius_core::AuthMethod;
 use tracing::{debug, instrument};
 
@@ -52,22 +51,40 @@ pub fn looks_like_private_key(material: &str) -> bool {
     material.contains("PRIVATE KEY")
 }
 
-/// Normalize a `russh` authentication outcome to a boolean.
+/// Load a private key from either inline PEM/OpenSSH material or a path.
 ///
-/// PORT-TODO: the return type of `russh`'s `authenticate_*` methods changed
-/// across releases (`bool` in older versions, `AuthResult` in newer ones).
-/// Matching on the `Debug` rendering accepts either shape without pinning the
-/// crate to one exact signature — `bool` prints `true`/`false` and
-/// `AuthResult::Success` prints `Success`. If `russh` 0.64 exposes a typed
-/// result, replace this helper with an exhaustive `match`.
-fn outcome_succeeded(outcome: impl std::fmt::Debug) -> bool {
-    let rendered = format!("{outcome:?}");
-    rendered == "true" || rendered == "Success"
+/// Termius stores the key *content* in its vault; russh 0.64 exposes
+/// `russh::keys::decode_secret_key(&str, Option<&str>)` for in-memory
+/// parsing, so PEM blobs are decoded directly (no temp file) and paths go
+/// through `russh::keys::load_secret_key`.
+fn load_key(material: &str, passphrase: Option<&String>) -> Result<russh::keys::PrivateKey> {
+    let passphrase = passphrase.map(String::as_str);
+    if looks_like_private_key(material) {
+        russh::keys::decode_secret_key(material, passphrase)
+            .map_err(|e| SshError::auth("private key", format!("failed to load private key: {e}")))
+    } else {
+        russh::keys::load_secret_key(material, passphrase)
+            .map_err(|e| SshError::auth("private key", format!("failed to load private key: {e}")))
+    }
+}
+
+/// Pick the RSA hash algorithm the server supports (`server-sig-algs`);
+/// `None` means "no extension info — try and hope". Non-RSA keys ignore the
+/// hash and russh maps `None` to the legacy `ssh-rsa` for them.
+async fn rsa_hash_alg<H: Handler>(handle: &Handle<H>) -> Option<HashAlg> {
+    handle
+        .best_supported_rsa_hash()
+        .await
+        .map(|best| best.unwrap_or(None))
+        .unwrap_or(None)
 }
 
 /// Finish an authentication attempt, preserving the failure reason.
-fn check_outcome(method: &str, outcome: impl std::fmt::Debug) -> Result<()> {
-    if outcome_succeeded(outcome) {
+///
+/// (russh 0.64: `authenticate_*` resolves to `russh::client::AuthResult`,
+/// which carries `success()`; transport failures are separate `Err`s.)
+fn check_outcome(method: &str, outcome: &AuthResult) -> Result<()> {
+    if outcome.success() {
         debug!(method, "ssh authentication accepted");
         Ok(())
     } else {
@@ -75,76 +92,68 @@ fn check_outcome(method: &str, outcome: impl std::fmt::Debug) -> Result<()> {
     }
 }
 
-static TEMP_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Materialize key material to a path `russh` can load.
-///
-/// Returns `(path, is_temporary)`; callers must delete the file when
-/// `is_temporary` is `true`.
-///
-/// Termius stores the key *content* in its vault, while `russh`'s
-/// `load_secret_key` reads from disk — so PEM blobs are written to a
-/// per-process temp file with `0600` permissions, loaded, and removed before
-/// authentication even starts.
-///
-/// PORT-TODO: if `russh` 0.64 exposes an in-memory parser (e.g.
-/// `PrivateKey::from_openssh(...)`), drop the temp file entirely.
-fn key_material_to_path(material: &str) -> Result<(PathBuf, bool)> {
-    if !looks_like_private_key(material) {
-        // Not a PEM blob — treat it as a path the user configured.
-        return Ok((PathBuf::from(material), false));
-    }
-
-    for _ in 0..4 {
-        let unique = TEMP_KEY_COUNTER.fetch_add(1, Ordering::Relaxed);
-        // Rebuilt each iteration so a retry never nests a second component
-        // onto a previously pushed path.
-        let mut path = std::env::temp_dir();
-        path.push(format!("termius-rs-key-{}-{unique}", std::process::id()));
-
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&path) {
-            Ok(mut file) => {
-                file.write_all(material.as_bytes()).map_err(|e| {
-                    let _ = std::fs::remove_file(&path);
-                    SshError::auth("private key", format!("failed to stage private key: {e}"))
-                })?;
-                return Ok((path, true));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => {
-                return Err(SshError::auth(
-                    "private key",
-                    format!("failed to stage private key: {e}"),
-                ));
-            }
-        }
-    }
-    Err(SshError::auth("private key", "failed to stage private key: temp name collision"))
-}
-
 /// ssh-agent authentication (`SSH_AUTH_SOCK`).
 ///
-/// PORT-TODO: `russh`'s agent client (`russh::keys::agent::client::AgentClient`
-/// + a `Handle::authenticate_agent`-style call, feature-gated in some
-/// releases) is the intended wiring here; the exact 0.64 surface could not be
-/// verified from this environment, so we fail with a precise, actionable
-/// reason instead of guessing an API that may not compile. The env-var check
-/// and error shape are the real Termius behavior (no agent → auth error).
-async fn authenticate_agent(username: &str) -> Result<()> {
-    let sock = std::env::var("SSH_AUTH_SOCK").map_err(|_| {
-        SshError::auth("agent", "SSH_AUTH_SOCK is not set; no ssh-agent available")
-    })?;
-    Err(SshError::auth(
-        "agent",
-        format!("ssh-agent at {sock} is not wired into russh yet (PORT-TODO) for user {username}"),
-    ))
+/// russh 0.64 ships an agent client (`russh::keys::agent::client::AgentClient`,
+/// with `connect_env()` on unix) implementing `russh::auth::Signer`, wired into
+/// the handshake through `Handle::authenticate_publickey_with`. We enumerate
+/// the agent's identities and try each until one is accepted.
+async fn authenticate_agent<H: Handler>(handle: &mut Handle<H>, username: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use russh::keys::agent::client::AgentClient;
+
+        let mut agent = AgentClient::connect_env().await.map_err(|e| {
+            SshError::auth("agent", format!("failed to connect to ssh-agent: {e}"))
+        })?;
+        let identities = agent.request_identities().await.map_err(|e| {
+            SshError::auth("agent", format!("failed to list ssh-agent identities: {e}"))
+        })?;
+        if identities.is_empty() {
+            return Err(SshError::auth("agent", "ssh-agent offered no identities"));
+        }
+        let mut last_failure = None;
+        for identity in &identities {
+            let public_key = identity.public_key().into_owned();
+            let hash_alg = if matches!(
+                public_key.algorithm(),
+                russh::keys::Algorithm::Rsa { .. }
+            ) {
+                rsa_hash_alg(handle).await
+            } else {
+                None
+            };
+            match handle
+                .authenticate_publickey_with(username, public_key, hash_alg, &mut agent)
+                .await
+            {
+                Ok(outcome) => {
+                    if outcome.success() {
+                        debug!(method = "agent", "ssh authentication accepted");
+                        return Ok(());
+                    }
+                    last_failure = Some("server rejected the agent identity");
+                }
+                Err(e) => return Err(SshError::auth("agent", e.to_string())),
+            }
+        }
+        Err(SshError::auth(
+            "agent",
+            last_failure.unwrap_or("server rejected all agent identities"),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = handle;
+        let sock = std::env::var("SSH_AUTH_SOCK").ok();
+        Err(SshError::auth(
+            "agent",
+            format!(
+                "ssh-agent authentication is not wired up on this platform yet (PORT-TODO){}",
+                sock.map(|s| format!(" (agent socket: {s})")).unwrap_or_default()
+            ),
+        ))
+    }
 }
 
 /// Run the SSH user authentication exchange for the given [`AuthMethod`].
@@ -164,48 +173,39 @@ pub async fn authenticate<H: Handler>(
                 .authenticate_none(username)
                 .await
                 .map_err(|e| SshError::auth("none", e.to_string()))?;
-            check_outcome("none", outcome)
+            check_outcome("none", &outcome)
         }
         AuthPlan::Password(password) => {
             let outcome = handle
                 .authenticate_password(username, password.as_str())
                 .await
                 .map_err(|e| SshError::auth("password", e.to_string()))?;
-            check_outcome("password", outcome)
+            check_outcome("password", &outcome)
         }
         AuthPlan::PrivateKey { material, passphrase } => {
-            let (path, temporary) = key_material_to_path(&material)?;
-            // PORT-TODO: `load_secret_key` is assumed synchronous
-            // (`path, Option<String>`); verify against russh 0.64.
-            let loaded = russh::keys::load_secret_key(path.clone(), passphrase);
-            if temporary {
-                let _ = std::fs::remove_file(&path);
-            }
-            let key = loaded.map_err(|e| {
-                SshError::auth("private key", format!("failed to load private key: {e}"))
-            })?;
-            // PORT-TODO: `authenticate_publickey(username, &key)` — verify
-            // whether russh 0.64 takes `&PrivateKey`, `Arc<PrivateKey>` or an
-            // owned key.
+            let key = load_key(&material, passphrase.as_ref())?;
+            // russh 0.64: `authenticate_publickey` takes a
+            // `PrivateKeyWithHashAlg` (Arc'd key + optional RSA hash alg).
+            let hash_alg = if matches!(key.algorithm(), russh::keys::Algorithm::Rsa { .. }) {
+                rsa_hash_alg(handle).await
+            } else {
+                None
+            };
+            let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
             let outcome = handle
-                .authenticate_publickey(username, &key)
+                .authenticate_publickey(username, key)
                 .await
                 .map_err(|e| SshError::auth("private key", e.to_string()))?;
-            check_outcome("private key", outcome)
+            check_outcome("private key", &outcome)
         }
-        AuthPlan::Agent => authenticate_agent(username).await,
+        AuthPlan::Agent => authenticate_agent(handle, username).await,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Debug)]
-    enum FakeOutcome {
-        Success,
-        Failure,
-    }
+    use russh::MethodSet;
 
     #[test]
     fn maps_every_auth_method() {
@@ -241,20 +241,18 @@ mod tests {
     }
 
     #[test]
-    fn outcome_hedge_accepts_both_russh_shapes() {
-        assert!(outcome_succeeded(true));
-        assert!(!outcome_succeeded(false));
-        assert!(outcome_succeeded(FakeOutcome::Success));
-        assert!(!outcome_succeeded(FakeOutcome::Failure));
-        assert!(!outcome_succeeded(()));
-    }
-
-    #[test]
     fn check_outcome_keeps_auth_reason() {
-        let err = check_outcome("password", false).expect_err("false must be rejected");
+        let err = check_outcome(
+            "password",
+            &AuthResult::Failure {
+                remaining_methods: MethodSet::empty(),
+                partial_success: false,
+            },
+        )
+        .expect_err("failure must be rejected");
         assert!(err.is_authentication());
         assert!(err.to_string().contains("password"));
 
-        assert!(check_outcome("password", true).is_ok());
+        assert!(check_outcome("password", &AuthResult::Success).is_ok());
     }
 }

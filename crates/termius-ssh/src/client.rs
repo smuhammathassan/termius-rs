@@ -88,14 +88,12 @@ impl TermiusHandler {
 impl Handler for TermiusHandler {
     type Error = russh::Error;
 
-    // PORT-TODO: verify the `check_server_key` signature against russh 0.64
-    // (`&PublicKey`, one argument) — this matches every recent release.
-    // PORT-TODO: if russh's `Handler` still uses the `async-trait` crate,
-    // add `#[async_trait]` here; native `async fn` impls (stable since 1.75,
-    // and russh's current style) need no attribute.
+    // russh 0.64: `Handler::check_server_key` takes a
+    // `&russh::keys::PublicKeyOrCertificate` (key *or* certificate) and, in
+    // the default feature set, is a native `async fn` — no `#[async_trait]`.
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::PublicKey,
+        server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> std::result::Result<bool, Self::Error> {
         match host_key_decision(self.strict_host_key_checking, None, None) {
             HostKeyDecision::Accept => {
@@ -112,21 +110,20 @@ impl Handler for TermiusHandler {
 }
 
 /// Build the russh client config: keepalive ping interval from
-/// `ConnectionParams`, and an inactivity timeout approximating
-/// `keepalive_count_max` ("give up after N missed keepalives").
+/// `ConnectionParams`, `keepalive_max` ("give up after N missed keepalives"),
+/// and an inactivity timeout as a backstop.
 ///
-/// PORT-TODO: verify the `keepalive_interval` / `inactivity_timeout` field
-/// names against russh 0.64's `client::Config`.
+/// (russh 0.64: `client::Config` has `keepalive_interval: Option<Duration>`,
+/// `keepalive_max: usize`, `inactivity_timeout: Option<Duration>`.)
 fn build_config(params: &ConnectionParams) -> Arc<russh::client::Config> {
     let keepalive = Duration::from_secs(params.keepalive_interval_secs);
-    let inactivity = if keepalive.is_zero() {
-        None
-    } else {
-        Some(keepalive * params.keepalive_count_max.max(1))
-    };
+    let keepalive_interval = if keepalive.is_zero() { None } else { Some(keepalive) };
+    let inactivity_timeout =
+        keepalive_interval.map(|interval| interval * params.keepalive_count_max.max(1));
     Arc::new(russh::client::Config {
-        keepalive_interval: keepalive,
-        inactivity_timeout: inactivity,
+        keepalive_interval,
+        keepalive_max: params.keepalive_count_max.max(1) as usize,
+        inactivity_timeout,
         ..Default::default()
     })
 }
@@ -163,7 +160,9 @@ async fn open_direct(
             "timed out connecting to {}:{}",
             params.host, params.port
         ))),
-        Ok(Err((err, _handler))) => Err(classify_handshake(params, &rejected, err)),
+        // russh 0.64: `connect` resolves to `Result<Handle<H>, H::Error>`;
+        // the handler is consumed by the session, not returned on error.
+        Ok(Err(err)) => Err(classify_handshake(params, &rejected, err)),
         Ok(Ok(handle)) => Ok(Handshake { handle, host_key_rejected: rejected }),
     }
 }
@@ -222,16 +221,16 @@ async fn open_via_jump(
     };
 
     let (jump_handler, jump_rejected) = TermiusHandler::new(params.strict_host_key_checking);
-    // PORT-TODO: `client::connect_over(config, stream, handler)` is the
-    // stream-based constructor we expect on russh 0.64 — verify the name.
-    let attempt = tokio::time::timeout(deadline, russh::client::connect_over(config.clone(), stream, jump_handler));
+    // russh 0.64: the stream-based constructor is `client::connect_stream`.
+    let attempt =
+        tokio::time::timeout(deadline, russh::client::connect_stream(config.clone(), stream, jump_handler));
     let mut jump_handle = match attempt.await {
         Err(_) => {
             return Err(SshError::timeout(format!(
                 "timed out handshaking with proxy {proxy_host}:{proxy_port}"
             )));
         }
-        Ok(Err((err, _handler))) => {
+        Ok(Err(err)) => {
             if jump_rejected.load(Ordering::SeqCst) {
                 return Err(SshError::host_key(format!(
                     "proxy {proxy_host}:{proxy_port} refused the server host key"
@@ -249,10 +248,10 @@ async fn open_via_jump(
     // termius-core could add `proxy_auth`).
     auth::authenticate(&mut jump_handle, proxy_username, &params.auth).await?;
 
-    // PORT-TODO: `channel_direct_tcpip` port argument types hedged with
-    // `.into()` (u16 vs wire u32).
+    // russh 0.64: `Handle::channel_open_direct_tcpip(host, port: u32,
+    // originator, originator_port: u32)`.
     let channel = jump_handle
-        .channel_direct_tcpip(params.host.as_str(), params.port.into(), "127.0.0.1", 0u16.into())
+        .channel_open_direct_tcpip(params.host.as_str(), u32::from(params.port), "127.0.0.1", 0)
         .await
         .map_err(|err| {
             SshError::connection(format!(
@@ -262,9 +261,12 @@ async fn open_via_jump(
         })?;
 
     let (target_handler, target_rejected) = TermiusHandler::new(params.strict_host_key_checking);
-    // PORT-TODO: the tunneled channel is passed as the transport; if russh
-    // requires an adapter, use `channel.into_stream()` here.
-    let attempt = tokio::time::timeout(deadline, russh::client::connect_over(config, channel, target_handler));
+    // russh 0.64: the tunneled channel becomes an AsyncRead+AsyncWrite
+    // transport via `Channel::into_stream()` for `connect_stream`.
+    let attempt = tokio::time::timeout(
+        deadline,
+        russh::client::connect_stream(config, channel.into_stream(), target_handler),
+    );
     let target_handle = match attempt.await {
         Err(_) => {
             return Err(SshError::timeout(format!(
@@ -272,7 +274,7 @@ async fn open_via_jump(
                 params.host, params.port
             )));
         }
-        Ok(Err((err, _handler))) => {
+        Ok(Err(err)) => {
             if target_rejected.load(Ordering::SeqCst) {
                 return Err(SshError::host_key(format!(
                     "{}:{} refused the server host key",
@@ -424,22 +426,21 @@ impl SshClient {
     #[instrument(skip_all, fields(command = %command))]
     pub async fn exec(&mut self, command: &str) -> Result<ExecOutput> {
         let mut channel = {
-            let mut guard = self.handle.lock().await;
+            let guard = self.handle.lock().await;
             guard.channel_open_session().await
         }
         .map_err(|err| SshError::connection(format!("failed to open exec channel: {err}")))?;
 
-        // PORT-TODO: `request_exec(&str)` — verify against russh 0.64.
+        // russh 0.64: the exec request is `Channel::exec(want_reply, command)`.
         channel
-            .request_exec(command)
+            .exec(true, command)
             .await
             .map_err(|err| SshError::protocol(format!("exec request rejected: {err}")))?;
 
         let mut output = ExecOutput::default();
         loop {
-            // PORT-TODO: `Channel::recv()` — verify against russh 0.64
-            // (older releases called this `wait()`).
-            match channel.recv().await {
+            // russh 0.64: incoming messages are awaited with `Channel::wait()`.
+            match channel.wait().await {
                 Some(ChannelMsg::Data { data }) => output.stdout.extend_from_slice(&data),
                 Some(ChannelMsg::ExtendedData { data, .. }) => {
                     output.stderr.extend_from_slice(&data)
@@ -448,7 +449,7 @@ impl SshClient {
                     output.exit_status = Some(exit_status)
                 }
                 Some(ChannelMsg::ExitSignal { signal_name, .. }) => {
-                    output.exit_signal = Some(signal_name)
+                    output.exit_signal = Some(format!("{signal_name:?}"))
                 }
                 Some(_) => {}
                 None => break,
@@ -477,32 +478,34 @@ impl SshClient {
 
         let size = self.params.terminal;
         let mut channel = {
-            let mut guard = self.handle.lock().await;
+            let guard = self.handle.lock().await;
             guard.channel_open_session().await
         }
         .map_err(|err| SshError::connection(format!("failed to open shell channel: {err}")))?;
 
         let (cols, rows, width, height) = shell::pty_args(&size);
-        // PORT-TODO: `request_pty(term, cols, rows, pixel_w, pixel_h, modes)`
-        // and `request_shell()` signatures — verify against russh 0.64.
+        // russh 0.64: `Channel::request_pty(want_reply, term, col_width,
+        // row_height, pix_width, pix_height, terminal_modes: &[(Pty, u32)])`
+        // and `request_shell(want_reply)`.
         channel
             .request_pty(
+                true,
                 shell::DEFAULT_TERM,
-                cols.into(),
-                rows.into(),
-                width.into(),
-                height.into(),
+                u32::from(cols),
+                u32::from(rows),
+                width,
+                height,
                 &[],
             )
             .await
             .map_err(|err| SshError::protocol(format!("pty request rejected: {err}")))?;
         channel
-            .request_shell()
+            .request_shell(true)
             .await
             .map_err(|err| SshError::protocol(format!("shell request rejected: {err}")))?;
 
-        let (tx_input, rx_input) = mpsc::channel::<Bytes>(64);
-        let (tx_command, rx_command) = mpsc::channel::<ShellCommand>(16);
+        let (tx_input, mut rx_input) = mpsc::channel::<Bytes>(64);
+        let (tx_command, mut rx_command) = mpsc::channel::<ShellCommand>(16);
         let (tx_output, rx_output) = mpsc::channel::<Bytes>(256);
         let (tx_exit, rx_exit) = mpsc::channel::<ExitEvent>(1);
 
@@ -527,16 +530,11 @@ impl SshClient {
                     match command {
                         ShellCommand::Resize(target) => {
                             let (cols, rows, width, height) = shell::pty_args(&target);
-                            // PORT-TODO: `request_pty_change_dimensions` is
-                            // our best guess for the `window-change` sender
-                            // on russh 0.64 — verify name/argument order.
+                            // russh 0.64: `Channel::window_change(col_width,
+                            // row_height, pix_width, pix_height)` sends the
+                            // `window-change` request.
                             let _ = channel
-                                .request_pty_change_dimensions(
-                                    cols.into(),
-                                    rows.into(),
-                                    width.into(),
-                                    height.into(),
-                                )
+                                .window_change(u32::from(cols), u32::from(rows), width, height)
                                 .await;
                         }
                         ShellCommand::Eof => {
@@ -561,7 +559,7 @@ impl SshClient {
                 let event = tokio::select! {
                     item = rx_input.recv(), if stdin_open => PumpEvent::Input(item),
                     item = rx_command.recv(), if commands_open => PumpEvent::Command(item),
-                    msg = channel.recv() => PumpEvent::Ssh(msg),
+                    msg = channel.wait() => PumpEvent::Ssh(msg),
                 };
                 match event {
                     PumpEvent::Input(Some(bytes)) => pending_input.push_back(bytes),
@@ -585,7 +583,7 @@ impl SshClient {
                         exit.exit_status = Some(exit_status);
                     }
                     PumpEvent::Ssh(Some(ChannelMsg::ExitSignal { signal_name, .. })) => {
-                        exit.signal = Some(signal_name);
+                        exit.signal = Some(format!("{signal_name:?}"));
                     }
                     PumpEvent::Ssh(Some(_)) => {}
                     PumpEvent::Ssh(None) => break,
@@ -616,24 +614,24 @@ impl SshClient {
     /// Open an SFTP session on this connection (`sftp()` from the JS
     /// surface): session channel + `sftp` subsystem.
     pub async fn sftp(&mut self) -> Result<SftpClient> {
-        let mut channel = {
-            let mut guard = self.handle.lock().await;
+        let channel = {
+            let guard = self.handle.lock().await;
             guard.channel_open_session().await
         }
         .map_err(|err| SshError::connection(format!("failed to open sftp channel: {err}")))?;
 
-        // PORT-TODO: `request_subsystem("sftp")` — verify against russh 0.64
-        // (some builds also offer a `request_sftp()` convenience).
+        // russh 0.64: `Channel::request_subsystem(want_reply, name)`.
         channel
-            .request_subsystem("sftp")
+            .request_subsystem(true, "sftp")
             .await
             .map_err(|err| SshError::protocol(format!("sftp subsystem request rejected: {err}")))?;
 
-        // The channel type is inferred here; `SftpClient` only ever sees the
-        // resulting `SftpSession`.
-        // PORT-TODO: if `SftpSession::new` does not take the channel
-        // directly, try `channel.into_stream()`.
-        let session = russh_sftp::client::sftp::SftpSession::new(channel);
+        // russh-sftp 3.0.1: `SftpSession::new` is async, lives at
+        // `russh_sftp::client::SftpSession`, and takes any AsyncRead+AsyncWrite
+        // transport — the channel converted with `into_stream()`.
+        let session = russh_sftp::client::SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|err| SshError::connection(format!("sftp session startup failed: {err}")))?;
         Ok(SftpClient::new(session))
     }
 
@@ -645,9 +643,8 @@ impl SshClient {
         }
         self.shell_commands = None;
 
-        let mut guard = self.handle.lock().await;
-        // PORT-TODO: `russh::Disconnect::ByApplication` — verify the reason
-        // enum path against russh 0.64.
+        let guard = self.handle.lock().await;
+        // russh 0.64: `Handle::disconnect(reason, description, language_tag)`.
         let result = guard
             .disconnect(russh::Disconnect::ByApplication, "termius", "en")
             .await
@@ -748,7 +745,8 @@ mod tests {
         params.keepalive_interval_secs = 15;
         params.keepalive_count_max = 4;
         let config = build_config(&params);
-        assert_eq!(config.keepalive_interval, Duration::from_secs(15));
+        assert_eq!(config.keepalive_interval, Some(Duration::from_secs(15)));
+        assert_eq!(config.keepalive_max, 4);
         assert_eq!(config.inactivity_timeout, Some(Duration::from_secs(60)));
 
         params.keepalive_interval_secs = 0;

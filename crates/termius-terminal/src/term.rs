@@ -18,10 +18,12 @@
 //! the same shape as xterm.js's `onData`/`onResize`/`onTitleChange`
 //! subscriptions in the Electron renderer.
 //!
-//! PORT-TODO(alacritty_terminal 0.26): this crate targets an API that has
-//! shifted between minor versions. Every uncertain call site carries a
-//! `PORT-TODO`; they are all confined to this file plus two helpers in
-//! [`crate::grid_viewport`].
+//! Written against the real `alacritty_terminal` 0.26 API: `Term::new` takes
+//! a `term::Config` plus any `grid::Dimensions` impl; the escape-sequence
+//! parser is `vte::ansi::Processor` (re-exported as
+//! `alacritty_terminal::vte`); grid indices live in `alacritty_terminal::index`;
+//! selections are built from `alacritty_terminal::selection::Selection` and
+//! installed on the public `Term::selection` field.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -30,9 +32,11 @@ use termius_core::TerminalSize;
 
 use alacritty_terminal::{
     event::{Event, EventListener},
-    grid::{Column, Line, Point, Scroll},
-    term::{Term, TermMode},
-    vte::Processor,
+    grid::{Dimensions, Scroll},
+    index::{Column, Line, Point, Side},
+    selection::{Selection, SelectionType},
+    term::{Config, Term, TermMode},
+    vte::ansi::Processor,
 };
 
 use crate::error::{Result, TerminalError};
@@ -90,13 +94,14 @@ pub enum Key {
     F(u8),
 }
 
-/// `EventListener` that appends every event to a shared buffer the UI drains.
+/// `EventListener` that maps every alacritty event onto the UI-facing
+/// [`TermEvent`] shape and appends it to a shared buffer the UI drains.
 #[derive(Debug, Clone)]
-pub(crate) struct CollectingListener(Rc<RefCell<Vec<Event>>>);
+pub(crate) struct CollectingListener(Rc<RefCell<Vec<TermEvent>>>);
 
 impl EventListener for CollectingListener {
-    fn send_event(&mut self, event: Event) {
-        self.0.borrow_mut().push(event);
+    fn send_event(&self, event: Event) {
+        self.0.borrow_mut().push(map_event(event));
     }
 }
 
@@ -104,7 +109,7 @@ impl EventListener for CollectingListener {
 pub struct Terminal {
     term: Term<CollectingListener>,
     processor: Processor,
-    events: Rc<RefCell<Vec<Event>>>,
+    events: Rc<RefCell<Vec<TermEvent>>>,
     size: TerminalSize,
     dirty: crate::grid_viewport::DirtyTracker,
     selection_model: SelectionModel,
@@ -117,9 +122,9 @@ impl Terminal {
         validate_size(size)?;
         let events = Rc::new(RefCell::new(Vec::new()));
         let listener = CollectingListener(events.clone());
-        // PORT-TODO(alacritty_terminal 0.26): `Term::new(dimensions, listener)`;
-        // some versions take the dimensions by reference (`&dimensions`).
-        let term = Term::new(make_dimensions(size), listener);
+        // `Term::new(config, dimensions, event_proxy)` — 0.26 takes a
+        // `term::Config` first and borrows any `grid::Dimensions` impl.
+        let term = Term::new(Config::default(), &TermDims::from(size), listener);
         Ok(Self {
             term,
             processor: Processor::new(),
@@ -136,16 +141,15 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
-        // PORT-TODO(alacritty_terminal 0.26): `Processor::advance(&mut term,
-        // bytes, &mut renderer)` is the documented 0.26 signature. If the third
-        // argument must be a concrete renderer type (e.g. a provided
-        // `NoopRenderer`, or a custom `vte::ansi::Renderer` impl), swap
-        // `&mut ()` here — this is the single call site. A local copy is used
-        // because past versions accepted either `&[u8]` or `&mut [u8]`.
-        let mut buf = bytes.to_vec();
-        self.processor.advance(&mut self.term, &mut buf[..], &mut ());
+        // 0.26 signature: `Processor::advance(&mut self, handler: &mut H,
+        // bytes: &[u8]) where H: Handler` — `Term<T>` implements `Handler`,
+        // so no separate renderer argument is needed.
+        self.processor.advance(&mut self.term, bytes);
         // Any non-empty output can change the grid; invalidate unconditionally
-        // rather than trusting the event cadence.
+        // rather than trusting the event cadence, and surface the repaint
+        // hint (0.26's `Term` only emits `Wakeup` from its event *loop*, not
+        // from `Term` itself).
+        self.events.borrow_mut().push(TermEvent::Advance);
         self.generation += 1;
         self.dirty.mark_all();
         tracing::trace!(len = bytes.len(), "terminal advanced");
@@ -181,9 +185,9 @@ impl Terminal {
         if size == self.size {
             return Ok(());
         }
-        // PORT-TODO(alacritty_terminal 0.26): `Term::resize(dimensions, force)`;
-        // drop the trailing `false` if 0.26 dropped the force flag.
-        self.term.resize(make_dimensions(size), false);
+        // 0.26 signature: `Term::resize<S: Dimensions>(&mut self, size: S)` —
+        // takes the dimensions by value, no force flag.
+        self.term.resize(TermDims::from(size));
         self.size = size;
         self.dirty.resize(size.rows);
         self.generation += 1;
@@ -202,8 +206,7 @@ impl Terminal {
 
     /// Drain pending emulator events (empty vec when nothing happened).
     pub fn drain_events(&mut self) -> Vec<TermEvent> {
-        let pending: Vec<Event> = self.events.borrow_mut().drain(..).collect();
-        pending.into_iter().map(map_event).collect()
+        self.events.borrow_mut().drain(..).collect()
     }
 
     /// True while un-drained events are pending.
@@ -213,12 +216,12 @@ impl Terminal {
 
     /// Take a full repaint unit of the visible viewport.
     pub fn snapshot(&mut self) -> GridSnapshot {
-        build_snapshot(&mut self.term, self.size, self.generation)
+        build_snapshot(&self.term, self.size, self.generation)
     }
 
     /// True while the active buffer is the alternate screen (fullscreen apps).
     pub fn is_alt_screen(&self) -> bool {
-        self.term.mode().contains(TermMode::ALTERNATE_SCREEN)
+        self.term.mode().contains(TermMode::ALT_SCREEN)
     }
 
     /// Drain the dirty flag (true = a repaint is needed).
@@ -239,7 +242,7 @@ impl Terminal {
     /// Scroll the visible viewport; positive scrolls back into history.
     pub fn scroll_display(&mut self, lines: i32) {
         if lines != 0 {
-            self.term.scroll_display(Scroll::Lines(lines));
+            self.term.scroll_display(Scroll::Delta(lines));
         }
         self.dirty.mark_all();
     }
@@ -261,17 +264,27 @@ impl Terminal {
     /// Begin a selection at a viewport cell with the given granularity
     /// (mouse-down, double-click → [`SelectionMode::Word`], triple-click →
     /// [`SelectionMode::Line`], select-all → [`SelectionMode::All`]).
+    ///
+    /// 0.26 has no `Term::simple_selection` helpers; selections are
+    /// `selection::Selection` values installed on the public `Term::selection`
+    /// field.
     pub fn begin_selection(&mut self, row: u16, col: u16, mode: SelectionMode) {
         let point = self.viewport_point(row, col);
-        match mode {
-            SelectionMode::Char => self.term.simple_selection(point),
-            SelectionMode::Word => self.term.semantic_selection(point),
-            SelectionMode::Line => self.term.line_selection(point),
-            // PORT-TODO(alacritty_terminal 0.26): `Term::selection_all()` may
-            // not exist; fallback is start_selection at the first cell and
-            // update_selection at the last grid cell.
-            SelectionMode::All => self.term.selection_all(),
-        }
+        let selection = match mode {
+            SelectionMode::All => {
+                // No "select all" primitive either: anchor a Lines selection
+                // at the top-left of the grid and extend it to the
+                // bottom-right; `to_range` expands it over whole lines.
+                let top = self.term.topmost_line();
+                let bottom = self.term.bottommost_line();
+                let mut selection =
+                    Selection::new(SelectionType::Lines, Point::new(top, Column(0)), Side::Left);
+                selection.update(Point::new(bottom, self.term.last_column()), Side::Right);
+                selection
+            },
+            _ => Selection::new(mode.alacritty_type(), point, Side::Left),
+        };
+        self.term.selection = Some(selection);
         let at = if mode == SelectionMode::All {
             CellPosition::new(0, 0)
         } else {
@@ -284,22 +297,28 @@ impl Terminal {
     /// Extend the active selection to a viewport cell (mouse-drag /
     /// shift-extension). No-op when nothing is selected.
     pub fn extend_selection(&mut self, row: u16, col: u16) {
-        if self.selection_model.is_empty() {
+        let Some(model) = self.selection_model.selection().copied() else {
             return;
-        }
-        let point = self.viewport_point(row, col);
-        // PORT-TODO(alacritty_terminal 0.26): `Term::update_selection(point)`;
-        // some versions also took a SelectionType/alt flag.
-        self.term.update_selection(point);
+        };
+        let focus = self.viewport_point(row, col);
+        // Rebuild from the model anchor so the cell sides follow the drag
+        // direction (inclusive on both ends, whatever the order).
+        let anchor_point = self.viewport_point(model.anchor.row, model.anchor.col);
+        let (anchor_side, focus_side) = if focus >= anchor_point {
+            (Side::Left, Side::Right)
+        } else {
+            (Side::Right, Side::Left)
+        };
+        let mut selection = Selection::new(model.mode.alacritty_type(), anchor_point, anchor_side);
+        selection.update(focus, focus_side);
+        self.term.selection = Some(selection);
         self.selection_model.extend(CellPosition::new(row, col));
         self.dirty.mark_all();
     }
 
     /// Drop the active selection (mouse-up on empty region, Esc, copy done).
     pub fn clear_selection(&mut self) {
-        // PORT-TODO(alacritty_terminal 0.26): `Term::selection_clear()`;
-        // some versions passed a `physical_alt: bool` flag.
-        self.term.selection_clear();
+        self.term.selection = None;
         self.selection_model.clear();
         self.dirty.mark_all();
     }
@@ -312,8 +331,7 @@ impl Terminal {
 
     /// True while a non-empty selection exists in the term.
     pub fn has_selection(&self) -> bool {
-        // PORT-TODO(alacritty_terminal 0.26): `Selection::is_empty()`.
-        !self.term.selection().is_empty()
+        self.term.selection.as_ref().is_some_and(|s| !s.is_empty())
     }
 
     /// The UI-facing selection geometry (for painting the highlight).
@@ -323,28 +341,19 @@ impl Terminal {
 
     // ----- internals ------------------------------------------------------
 
-    /// Topmost visible grid-absolute line, derived from the display iterator
-    /// (robust against scrollback offset representation changes).
-    fn viewport_top_line(&mut self) -> usize {
-        let mut top: Option<usize> = None;
-        for (point, _) in self.term.grid_mut().display_iter() {
-            let line = point.line.0;
-            top = Some(match top {
-                Some(t) if t < line => t,
-                _ => line,
-            });
-        }
-        // A viewport always yields cells; fall back defensively.
-        top.unwrap_or(0)
+    /// Topmost visible grid-absolute line, from the scrollback display
+    /// offset (`0` at the live buffer, negative while scrolled back).
+    fn viewport_top_line(&self) -> i32 {
+        -(self.term.grid().display_offset() as i32)
     }
 
     /// Translate viewport coordinates to a grid-absolute alacritty [`Point`],
     /// clamped to the live geometry.
-    fn viewport_point(&mut self, row: u16, col: u16) -> Point {
+    fn viewport_point(&self, row: u16, col: u16) -> Point {
         let row = row.min(self.size.rows.saturating_sub(1));
         let col = col.min(self.size.cols.saturating_sub(1));
         let top = self.viewport_top_line();
-        Point { line: Line(top + row as usize), col: Column(col as usize) }
+        Point::new(Line(top + row as i32), Column(col as usize))
     }
 }
 
@@ -358,37 +367,42 @@ fn validate_size(size: TerminalSize) -> Result<()> {
     Ok(())
 }
 
-/// Build the alacritty dimensions struct from the shared [`TerminalSize`].
+/// Minimal cell-count [`Dimensions`] impl fed to `Term::new`/`Term::resize`.
 ///
-/// The pixel box is derived from the requested cell count so the emulator
-/// always agrees with the PTY about rows/cols regardless of font metrics.
-fn make_dimensions(size: TerminalSize) -> alacritty_terminal::term::Dimensions {
-    let width = size.cols as f32 * CELL_WIDTH_PX;
-    let height = size.rows as f32 * CELL_HEIGHT_PX;
-    // PORT-TODO(alacritty_terminal 0.26): this type was `term::SizeInfo` on
-    // the 0.14–0.19 line and was renamed `Dimensions` for 1.0; the
-    // `new(width, height, cell_width, cell_height, padding_x, padding_y)`
-    // argument order has been stable across the rename.
-    alacritty_terminal::term::Dimensions::new(
-        width,
-        height,
-        CELL_WIDTH_PX,
-        CELL_HEIGHT_PX,
-        0.0,
-        0.0,
-    )
+/// 0.26's `Dimensions` is a *trait* (cell counts only — pixel metrics left
+/// the terminal layer long ago); `Term` itself and `Grid` implement it. This
+/// private newtype carries just the geometry the emulator needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TermDims {
+    columns: usize,
+    screen_lines: usize,
 }
 
-// `#[allow(unreachable_patterns)]`: some 0.26 builds may make one of the arms
-// genuinely unreachable depending on which variants survive; keep them all.
-#[allow(unreachable_patterns)]
+impl From<TerminalSize> for TermDims {
+    fn from(size: TerminalSize) -> Self {
+        Self { columns: size.cols as usize, screen_lines: size.rows as usize }
+    }
+}
+
+impl Dimensions for TermDims {
+    fn total_lines(&self) -> usize {
+        self.screen_lines
+    }
+
+    fn screen_lines(&self) -> usize {
+        self.screen_lines
+    }
+
+    fn columns(&self) -> usize {
+        self.columns
+    }
+}
+
 fn map_event(event: Event) -> TermEvent {
-    // PORT-TODO(alacritty_terminal 0.26): variant names below are the long-
-    // stable ones; anything renamed (e.g. `Paste` → `Input`) lands in `Other`.
     match event {
         Event::PtyWrite(data) => TermEvent::DataToWrite(data),
         Event::Title(title) => TermEvent::Title(title),
-        Event::Advance => TermEvent::Advance,
+        Event::Wakeup => TermEvent::Advance,
         _ => TermEvent::Other,
     }
 }
@@ -512,16 +526,21 @@ mod tests {
     #[test]
     fn resize_rejects_degenerate_geometry() {
         let mut term = terminal();
-        let err = term
-            .resize(TerminalSize { cols: 0, rows: 10, width_px: None, height_px: None })
-            .expect_err("zero cols must fail");
+        let err = match term.resize(TerminalSize { cols: 0, rows: 10, width_px: None, height_px: None })
+        {
+            Err(err) => err,
+            Ok(()) => panic!("zero cols must fail"),
+        };
         assert!(matches!(err, TerminalError::InvalidSize { .. }));
     }
 
     #[test]
     fn new_rejects_degenerate_geometry() {
-        let err = Terminal::new(TerminalSize { cols: 80, rows: 0, width_px: None, height_px: None })
-            .expect_err("zero rows must fail");
+        let err = match Terminal::new(TerminalSize { cols: 80, rows: 0, width_px: None, height_px: None })
+        {
+            Err(err) => err,
+            Ok(_) => panic!("zero rows must fail"),
+        };
         assert!(matches!(err, TerminalError::InvalidSize { .. }));
     }
 

@@ -22,10 +22,9 @@ pub const DEFAULT_TERM: &str = "xterm-256color";
 /// Convert the domain terminal size into SSH `pty-req` dimensions:
 /// `(cols, rows, pixel_width, pixel_height)`.
 ///
-/// The tuple is deliberately typed `(u16, u16, u32, u32)`: the source model
-/// stores cols/rows as `u16` and pixels as `Option<u32>`, and call sites
-/// widen via `.into()` so this keeps compiling whether `russh` takes `u16`
-/// or `u32` wire-style arguments (PORT-TODO: pin to the russh 0.64 signature).
+/// Typed `(u16, u16, u32, u32)`: russh 0.64's `request_pty` / `window_change`
+/// take `u32` for all four dimensions, so call sites widen cols/rows with
+/// `u32::from`.
 pub fn pty_args(size: &TerminalSize) -> (u16, u16, u32, u32) {
     (
         size.cols,

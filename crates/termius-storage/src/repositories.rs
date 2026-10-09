@@ -217,7 +217,7 @@ macro_rules! define_repository {
 
                 /// Delete by id; `false` when nothing matched.
                 pub fn delete(&self, id: &str) -> Result<bool> {
-                    self.store.delete_record(id)
+                    self.store.delete_record::<$record>(id)
                 }
             }
         )+
