@@ -13,3 +13,8 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
+# serde for the Termius `serialOptions` shape (path/baudRate/dataBits/...)
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
