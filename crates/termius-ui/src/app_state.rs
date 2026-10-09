@@ -1052,7 +1052,8 @@ mod tests {
         });
         library.keychains.push(chain);
 
-        let host = host_with("db", None);
+        let mut host = host_with("db", None);
+        host.key_id = Some("key-1".into());
         let params = params_for(&host, &library);
         assert_eq!(params.username, "db");
         assert_eq!(
