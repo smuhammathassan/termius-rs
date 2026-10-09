@@ -1,0 +1,1 @@
+//! connection — see crate docs.

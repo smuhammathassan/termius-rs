@@ -1,0 +1,10 @@
+[package]
+name = "termius-fido"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FIDO2/WebAuthn + U2F security-key support (SSH certificates), mirroring @termius/libfido2. Deferred wave — stub types only until scheduled."
+
+[dependencies]
+termius-core = { workspace = true }
+thiserror = { workspace = true }

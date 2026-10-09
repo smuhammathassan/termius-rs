@@ -1,0 +1,1 @@
+//! snippet — see crate docs.

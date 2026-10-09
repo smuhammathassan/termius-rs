@@ -1,0 +1,16 @@
+[package]
+name = "termius-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GPUI (Zed's native UI framework) views replacing the Electron React/Redux renderer: host list sidebar, terminal tabs, SFTP browser, port-forwarding manager, snippets panel, keychain manager, settings, login/sync UI. Native, GPU-accelerated, no webview."
+
+[dependencies]
+gpui = { workspace = true }
+termius-core = { workspace = true }
+termius-terminal = { workspace = true }
+termius-storage = { workspace = true }
+termius-ssh = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }

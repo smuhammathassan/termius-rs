@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/termius-core",
+    "crates/termius-storage",
+    "crates/termius-ssh",
+    "crates/termius-telnet",
+    "crates/termius-serial",
+    "crates/termius-terminal",
+    "crates/termius-sync",
+    "crates/termius-mosh",
+    "crates/termius-cloud",
+    "crates/termius-fido",
+    "crates/termius-ui",
+    "crates/termius-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# shared crates (used across the workspace)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53", features = ["full"] }
+thiserror = "2"
+anyhow = "1"
+bytes = "1"
+futures = "0.3"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+directories = "6"
+base64 = "0.23"
+hex = "0.4"
+sha2 = "0.10"
+hmac = "0.12"
+rand = "0.9"
+# engines / protocol
+russh = "0.64"
+russh-sftp = "3"
+alacritty_terminal = "0.26"
+serialport = "4"
+unicode-width = "0.2"
+# storage
+rusqlite = { version = "0.40", features = ["bundled"] }
+keyring = { version = "4", features = ["apple-native"] }
+# network
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
+# UI framework (Zed's GPUI) — native, replaces Electron renderer
+gpui = "0.2"
+
+# internal crates (path deps so crates can reference each other)
+termius-core = { path = "crates/termius-core" }
+termius-storage = { path = "crates/termius-storage" }
+termius-ssh = { path = "crates/termius-ssh" }
+termius-telnet = { path = "crates/termius-telnet" }
+termius-serial = { path = "crates/termius-serial" }
+termius-terminal = { path = "crates/termius-terminal" }
+termius-sync = { path = "crates/termius-sync" }
+termius-mosh = { path = "crates/termius-mosh" }
+termius-cloud = { path = "crates/termius-cloud" }
+termius-fido = { path = "crates/termius-fido" }
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+opt-level = 2

@@ -1,0 +1,1 @@
+//! vault — see crate docs.

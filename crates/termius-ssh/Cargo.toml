@@ -1,0 +1,17 @@
+[package]
+name = "termius-ssh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SSH engine over russh: connect, auth (password/pubkey/agent), interactive shell (PTY), exec, SFTP, local/dynamic port forwarding, keepalives, jump/proxy hosts. Replaces @termius/libtermius + libssh2 native addon."
+
+[dependencies]
+termius-core = { workspace = true }
+russh = { workspace = true }
+russh-sftp = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "termius-cloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cloud provider integrations (Azure/AWS/GCP VM discovery + provisioning), mirroring the @azure/* SDK usage. Deferred wave — stub types only until scheduled."
+
+[dependencies]
+termius-core = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

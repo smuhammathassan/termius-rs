@@ -1,0 +1,15 @@
+[package]
+name = "termius-serial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Serial-port connection engine over the serialport crate: open/configure (baud, data bits, parity, stop bits, flow control), read/write byte streams, terminal integration."
+
+[dependencies]
+termius-core = { workspace = true }
+serialport = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }

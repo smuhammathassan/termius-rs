@@ -1,0 +1,1 @@
+//! client — see crate docs.

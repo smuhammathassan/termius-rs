@@ -1,0 +1,22 @@
+[package]
+name = "termius-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Termius desktop binary: wires engines + storage + GPUI UI, owns window/menu/dock lifecycle, terminal session multiplexing (replaces Electron main+background+renderer IPC split), auto-update, crash reporting, single-instance lock."
+
+[dependencies]
+termius-ui = { workspace = true }
+termius-core = { workspace = true }
+termius-storage = { workspace = true }
+termius-ssh = { workspace = true }
+termius-telnet = { workspace = true }
+termius-serial = { workspace = true }
+termius-terminal = { workspace = true }
+termius-sync = { workspace = true }
+tokio = { workspace = true }
+gpui = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

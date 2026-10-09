@@ -1,0 +1,18 @@
+[package]
+name = "termius-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local persistence: SQLite-backed repositories (hosts, identities, snippets, keychains, known-hosts, groups, port-forwardings, brands), migrations, and OS keychain (keyring) secret storage. Replaces Termius schema.js + repositories + keytar."
+
+[dependencies]
+termius-core = { workspace = true }
+rusqlite = { workspace = true }
+keyring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+directories = { workspace = true }
+tracing = { workspace = true }

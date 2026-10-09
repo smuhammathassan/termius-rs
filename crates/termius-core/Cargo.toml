@@ -1,0 +1,16 @@
+[package]
+name = "termius-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Provider-neutral domain models for Termius: hosts, identities, port-forwarding, snippets, groups, known-hosts, keychains, vaults/clusters, connection parameters. Pure serde types + validation. No I/O."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

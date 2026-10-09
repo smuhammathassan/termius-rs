@@ -1,0 +1,1 @@
+//! error — see crate docs.

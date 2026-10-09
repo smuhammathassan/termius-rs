@@ -1,0 +1,1 @@
+//! sftp — see crate docs.

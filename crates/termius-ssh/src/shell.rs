@@ -1,0 +1,1 @@
+//! shell — see crate docs.
