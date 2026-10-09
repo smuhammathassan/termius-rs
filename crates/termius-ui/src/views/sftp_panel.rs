@@ -61,6 +61,8 @@ impl Render for SftpPanel {
                 ),
             }
         };
+        let entries_empty = entries.is_empty();
+        let has_error = error.is_some();
 
         let mut panel = div()
             .flex()
@@ -174,7 +176,7 @@ impl Render for SftpPanel {
                 }
                 panel = panel.child(row);
             }
-            if !loading && entries.is_empty() && error.is_none() {
+            if !loading && entries_empty && !has_error {
                 panel = panel.child(
                     div()
                         .px(px(10.))
