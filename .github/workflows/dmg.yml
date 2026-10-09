@@ -1,0 +1,55 @@
+name: Build DMG
+
+# Builds the Termius (GPUI) release binary on macOS, packages it into a
+# Termius.app bundle, wraps it in a DMG, and uploads it as a workflow artifact.
+# GPUI requires the Metal shader compiler, so this must run on macOS (not local).
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dmg:
+    name: build + package DMG (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p termius-app
+
+      - name: Assemble Termius.app bundle
+        run: |
+          set -euo pipefail
+          APP="dist/Termius.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/release/termius-app "$APP/Contents/MacOS/Termius"
+          cp packaging/Info.plist "$APP/Contents/Info.plist"
+          printf 'APPL????' > "$APP/Contents/PkgInfo"
+          # Ad-hoc sign so it runs locally (no Apple cert available in CI).
+          codesign --force --deep --sign - "$APP"
+          echo "Assembled:" && find dist -maxdepth 3
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          hdiutil create \
+            -volname "Termius" \
+            -srcfolder dist/Termius.app \
+            -ov -format UDZO \
+            termius-rs.dmg
+          ls -lh termius-rs.dmg
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: termius-rs-dmg
+          path: termius-rs.dmg
+          if-no-files-found: error
+          retention-days: 30
