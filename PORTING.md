@@ -73,4 +73,5 @@
 - 2026-10-10: dependency/feature fixes (reqwest `rustls`+`query`, keyring 3.x `apple-native`).
 - 2026-10-10: fixed all 10 core/engines crates against real APIs — russh 0.64 (connect_stream, Handler::check_server_key, Channel::exec/wait/window_change, russh_sftp::SftpSession), alacritty_terminal 0.26 (Processor, index::Point, vte::ansi::Color/CursorShape, Flags::STRIKEOUT, TermMode::ALT_SCREEN), reqwest `.query`, keyring error variants. **All 20 core test suites pass (0 failures).**
 - In progress: GPUI 0.2 compile of `termius-ui`/`termius-app` (CI macOS job + local check).
+- 2026-10-10: fixed `termius-ui` against real gpui 0.2.2 (InteractiveElement::id, rgb arity, FocusHandle::focus, observe/update_global via BorrowAppContext, spawn lifetimes). **CI fully green: core(linux) ✓, app(macos incl gpui) ✓, clippy ✓.** 12 crates, ~19.2k LOC, 231 tests passing, 0 failing.
 
