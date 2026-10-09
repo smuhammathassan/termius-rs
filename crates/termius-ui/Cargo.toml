@@ -14,3 +14,8 @@ termius-ssh = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+# Added by the UI wave (workspace deps, no root manifest change): tokio for the
+# engine bridge channels (mpsc/oneshot) + the fallback engine runtime, thiserror
+# for the crate's typed UiError per PORTING.md.
+tokio = { workspace = true }
+thiserror = { workspace = true }

@@ -3,8 +3,15 @@ name = "termius-fido"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "FIDO2/WebAuthn + U2F security-key support (SSH certificates), mirroring @termius/libfido2. Deferred wave — stub types only until scheduled."
+description = "FIDO2/WebAuthn + U2F security-key support (SSH certificates), mirroring @termius/libfido2. Stable API + honest stubs until the CTAP2/HID backend is ported."
 
 [dependencies]
 termius-core = { workspace = true }
 thiserror = { workspace = true }
+# serde for the WebAuthn wire/data types (camelCase JSON + JS-style base64).
+# Both are already declared in the workspace [workspace.dependencies] — no
+# root Cargo.toml change was needed.
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
