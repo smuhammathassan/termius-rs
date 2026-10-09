@@ -13,10 +13,10 @@
 //!   mid-render).
 
 use gpui::{
-    div, px, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle,
-    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    Rgba, ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window,
+    div, px, AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Rgba,
+    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Window,
 };
 use termius_terminal::{GridSnapshot, Key as TermKey, TerminalSize, CELL_HEIGHT_PX, CELL_WIDTH_PX};
 
@@ -182,8 +182,11 @@ impl TerminalPane {
     }
 
     /// Focus the pane so keystrokes reach the active session.
-    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus.focus(window, cx);
+    ///
+    /// gpui 0.2: [`gpui::FocusHandle::focus`] only needs the window; `cx` is
+    /// kept so callers don't have to change.
+    pub fn focus(&self, window: &mut Window, _cx: &mut Context<Self>) {
+        self.focus.focus(window);
     }
 
     fn active_id(&self, cx: &App) -> Option<String> {

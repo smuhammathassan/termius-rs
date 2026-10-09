@@ -337,7 +337,7 @@ impl TermiusState {
             }
         };
         let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(INPUT_CAPACITY);
-        let (event_tx, event_rx) = mpsc::channel::<BridgeEvent>(OUTPUT_CAPACITY);
+        let (event_tx, mut event_rx) = mpsc::channel::<BridgeEvent>(OUTPUT_CAPACITY);
 
         self.sessions.push(Session {
             id: session_id.clone(),
@@ -632,12 +632,17 @@ impl TermiusState {
             cx.notify();
             return;
         }
+        // gpui 0.2: `cx.spawn` futures must be `'static`; own the borrowed
+        // `session_id` before it rides along with the reply receiver.
+        let session_id = session_id.to_owned();
         cx.spawn(async move |this, cx| {
             let outcome = reply_rx
                 .await
                 .unwrap_or(Err("session closed before SFTP replied".to_owned()));
-            this.update(cx, |state, cx| state.apply_sftp_result(session_id, path, outcome, cx))
-                .ok();
+            this.update(cx, |state, cx| {
+                state.apply_sftp_result(&session_id, path, outcome, cx)
+            })
+            .ok();
         })
         .detach();
         cx.notify();

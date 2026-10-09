@@ -5,8 +5,8 @@
 //! download/preview is a later wave (PORT-TODO below).
 
 use gpui::{
-    div, px, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    div, px, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
 
 use crate::app_state::TermiusState;
@@ -37,7 +37,11 @@ impl SftpPanel {
     }
 
     fn navigate(&mut self, name: String, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| state.sftp_open_entry(&name, cx));
+        // `sftp_open_entry` targets a specific session; the panel navigates
+        // whatever session is currently active.
+        let Some(session_id) = self.active_session_id(cx) else { return };
+        self.state
+            .update(cx, |state, cx| state.sftp_open_entry(&session_id, &name, cx));
     }
 }
 

@@ -6,9 +6,9 @@
 use std::collections::HashSet;
 
 use gpui::{
-    div, px, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    div, px, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Window,
 };
 use termius_core::{Group, Host};
 
@@ -145,8 +145,11 @@ impl HostList {
     }
 
     /// Focus the list (e.g. on ⌘B sidebar toggle).
-    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus.focus(window, cx);
+    ///
+    /// gpui 0.2: [`gpui::FocusHandle::focus`] only needs the window; `cx` is
+    /// kept so callers don't have to change.
+    pub fn focus(&self, window: &mut Window, _cx: &mut Context<Self>) {
+        self.focus.focus(window);
     }
 
     fn move_cursor(&mut self, dir: i32, cx: &mut Context<Self>) {
@@ -314,7 +317,7 @@ impl Render for HostList {
             .px(px(4.))
             .rounded(px(4.))
             .bg(theme.accent)
-            .text_color(gpui::rgb(0xff, 0xff, 0xff))
+            .text_color(gpui::rgb(0xff_ffff))
             .child(SharedString::from("Connect ⏎"))
             .on_click(cx.listener(|this, _event, _window, cx| this.connect_selected(cx)));
 

@@ -69,3 +69,8 @@
 
 ## Progress log
 - 2026-10-10: workspace scaffold + 12 crate stubs + CI + plan created; repo `termius-rs` created; wave 1 dispatched.
+- 2026-10-10: all 12 crates implemented by parallel agents (core, storage, ssh, telnet, serial, terminal, sync, mosh, cloud, fido, ui, app) — ~28k lines.
+- 2026-10-10: dependency/feature fixes (reqwest `rustls`+`query`, keyring 3.x `apple-native`).
+- 2026-10-10: fixed all 10 core/engines crates against real APIs — russh 0.64 (connect_stream, Handler::check_server_key, Channel::exec/wait/window_change, russh_sftp::SftpSession), alacritty_terminal 0.26 (Processor, index::Point, vte::ansi::Color/CursorShape, Flags::STRIKEOUT, TermMode::ALT_SCREEN), reqwest `.query`, keyring error variants. **All 20 core test suites pass (0 failures).**
+- In progress: GPUI 0.2 compile of `termius-ui`/`termius-app` (CI macOS job + local check).
+

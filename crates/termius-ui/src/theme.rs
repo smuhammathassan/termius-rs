@@ -8,7 +8,7 @@
 //! The theme is registered as a GPUI [`Global`] so any view can read it with
 //! [`theme_of`]; `termius_ui::views::init` installs the dark variant.
 
-use gpui::{App, AppContext as _, Global, Rgba};
+use gpui::{App, Global, Rgba};
 
 use termius_terminal::{StyledCell, TerminalColor};
 

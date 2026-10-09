@@ -4,8 +4,8 @@
 //! a close affordance (also reachable with ⌘W via the shell's `CloseActiveTab`).
 
 use gpui::{
-    div, px, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    div, px, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
 
 use crate::app_state::{SessionStatus, TermiusState};

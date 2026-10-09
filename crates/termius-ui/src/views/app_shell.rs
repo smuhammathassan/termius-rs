@@ -4,16 +4,17 @@
 //! theme global ([`init`]), and opens the main window ([`open_window`]).
 
 use gpui::{
-    actions, div, px, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    KeyBinding, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, TitlebarOptions, Window, WindowHandle, WindowOptions,
+    actions, div, px, App, AppContext as _, BorrowAppContext, Context, Entity,
+    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
+    WindowHandle, WindowOptions,
 };
 
 use crate::app_state::TermiusState;
 use crate::theme::{theme_of, TermiusTheme, ThemeMode};
 use crate::views::{HostList, SftpPanel, TabBar, TerminalPane};
 
-/// Global actions bound app-wide (no key context: they fire from anywhere).
+// Global actions bound app-wide (no key context: they fire from anywhere).
 actions!(termius, [ToggleSidebar, ToggleSftp, CloseActiveTab]);
 
 /// Sidebar width; the terminal pane subtracts it from the window width.
@@ -86,7 +87,10 @@ impl AppShell {
         let terminal = cx.new(|cx| TerminalPane::new(state.clone(), cx));
         let sftp = cx.new(|_cx| SftpPanel::new(state.clone()));
         let observe_state = cx.observe(&state, |_, _, cx| cx.notify());
-        let observe_theme = cx.observe_global::<TermiusTheme>(|cx| cx.notify());
+        // gpui 0.2: `Context::observe_global` hands the observer the entity
+        // plus its context (`FnMut(&mut V, &mut Context<V>)`).
+        let observe_theme =
+            cx.observe_global::<TermiusTheme>(|_this, cx| cx.notify());
         Self {
             state,
             host_list,
