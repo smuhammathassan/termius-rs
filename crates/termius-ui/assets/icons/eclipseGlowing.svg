@@ -1,0 +1,25 @@
+<svg width="701" height="11" viewBox="0 0 701 11" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <g clip-path="url(#paint0_diamond_1491_3612_clip_path)">
+        <g transform="matrix(0.3505 0 0 0.0055 350.5 5.5)">
+            <rect x="0" y="0" width="1002.85" height="1181.82" fill="url(#paint0_diamond_1491_3612)" opacity="1"
+                  shape-rendering="crispEdges"/>
+            <rect x="0" y="0" width="1002.85" height="1181.82" transform="scale(1 -1)"
+                  fill="url(#paint0_diamond_1491_3612)" opacity="1" shape-rendering="crispEdges"/>
+            <rect x="0" y="0" width="1002.85" height="1181.82" transform="scale(-1 1)"
+                  fill="url(#paint0_diamond_1491_3612)" opacity="1" shape-rendering="crispEdges"/>
+            <rect x="0" y="0" width="1002.85" height="1181.82" transform="scale(-1)"
+                  fill="url(#paint0_diamond_1491_3612)" opacity="1" shape-rendering="crispEdges"/>
+        </g>
+    </g>
+    <ellipse cx="350.5" cy="5.5" rx="350.5" ry="5.5"
+    />
+    <defs>
+        <clipPath id="paint0_diamond_1491_3612_clip_path">
+            <ellipse cx="350.5" cy="5.5" rx="350.5" ry="5.5"/>
+        </clipPath>
+        <linearGradient id="paint0_diamond_1491_3612" x1="0" y1="0" x2="500" y2="500" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#98CEFF"/>
+            <stop offset="1" stop-color="#126082" stop-opacity="0"/>
+        </linearGradient>
+    </defs>
+</svg>

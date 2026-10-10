@@ -153,14 +153,16 @@ fn run_gui(data_dir: PathBuf, db_path: PathBuf) -> Result<()> {
     });
 
     // 8. GPUI — same shape as `termius_ui::launch()`, but wrapped in the
-    //    lifecycle above.
-    gpui::Application::new().run(|cx| {
-        termius_ui::init(cx);
-        if let Err(err) = termius_ui::open_window(cx) {
-            tracing::error!(error = %err, "failed to open the main window");
-            eprintln!("Termius failed to open its main window: {err}");
-        }
-    });
+    //    lifecycle above. The UI's icon set is registered as the asset source.
+    gpui::Application::new()
+        .with_assets(termius_ui::TermiusAssets)
+        .run(|cx| {
+            termius_ui::init(cx);
+            if let Err(err) = termius_ui::open_window(cx) {
+                tracing::error!(error = %err, "failed to open the main window");
+                eprintln!("Termius failed to open its main window: {err}");
+            }
+        });
 
     // 9. The run loop returned (window close on platforms that quit on last
     //    window, ⌘Q, or app termination) → orderly shutdown.

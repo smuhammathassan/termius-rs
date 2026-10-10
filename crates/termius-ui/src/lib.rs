@@ -35,6 +35,8 @@
 
 pub mod app_state;
 
+pub mod assets;
+
 pub mod error;
 
 pub mod navigation;
@@ -49,13 +51,14 @@ pub use app_state::{
     active_after_close, dialog_after, parent_path, AccountInfo, Dialog, DialogIntent, Library,
     Session, SessionStatus, SettingsState, SftpState, TermiusState,
 };
+pub use assets::{has_icon, icon, load_fonts, TermiusAssets, UI_FONT};
 pub use error::{Result, UiError};
 pub use navigation::{settings_tabs, sidebar_items, Section, SidebarItem, SETTINGS_TABS};
 pub use primitives::{
     Button, ButtonVariant, DialogFrame, EmptyState, InputField, ListItem, SectionHeader,
     SettingsSection, SettingsText, SettingsTitle, Switch,
 };
-pub use theme::{theme_of, TermiusTheme, ThemeMode};
+pub use theme::{text, theme_of, TermiusTheme, TextToken, ThemeMode};
 pub use views::{
     init, launch, open_window, AppShell, HostList, SftpPanel, TabBar, TerminalPane, TreeRow,
 };

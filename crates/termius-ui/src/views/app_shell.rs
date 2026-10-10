@@ -82,6 +82,7 @@ fn screen_slot(screen: impl IntoElement) -> Div {
 /// PORT-TODO: restore `settings.theme_mode` from the store here instead of
 /// hardcoding dark (see [`TermiusState`](crate::app_state::TermiusState)).
 pub fn init(cx: &mut App) {
+    crate::assets::load_fonts(cx);
     cx.set_global(TermiusTheme::dark());
     cx.bind_keys([
         KeyBinding::new("cmd-b", ToggleSidebar, None),
@@ -108,7 +109,9 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<WindowHandle<AppShell>> {
 /// Convenience entry point for `termius-app`: run the GPUI application with
 /// this UI installed and the main window open.
 pub fn launch() {
-    gpui::Application::new().run(|cx| {
+    gpui::Application::new()
+        .with_assets(crate::assets::TermiusAssets)
+        .run(|cx| {
         init(cx);
         if let Err(err) = open_window(cx) {
             tracing::error!(error = %err, "failed to open the main window");

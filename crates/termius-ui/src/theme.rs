@@ -8,9 +8,103 @@
 //! The theme is registered as a GPUI [`Global`] so any view can read it with
 //! [`theme_of`]; `termius_ui::views::init` installs the dark variant.
 
-use gpui::{App, Global, Rgba};
+use gpui::{px, App, FontWeight, Global, Rgba, Styled};
 
 use termius_terminal::{StyledCell, TerminalColor};
+
+/// The UI font family (Lineto Circular, embedded via [`crate::assets`]).
+pub use crate::assets::UI_FONT;
+
+/// One entry of the original Termius typography scale.
+///
+/// These are the exact tokens from the renderer's `theme.typography.fonts`
+/// object (see `analysis/readable/_main.js` and the recovered
+/// `reconnectSaga-*.js`): `{size, weight, line-height}` in CSS px. Token names
+/// follow the original (`r`egular/`b`old + size + colour role).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextToken {
+    /// Font size in px.
+    pub size: f32,
+    /// Font weight (CSS numeric, e.g. 450 / 700).
+    pub weight: f32,
+    /// Line height in px.
+    pub line_height: f32,
+    /// Letter spacing in px (0 = none).
+    pub letter_spacing: f32,
+    /// Whether the label is rendered upper-case.
+    pub uppercase: bool,
+}
+
+impl TextToken {
+    /// A token from size/weight/line-height (letter-spacing 0, no uppercase).
+    pub const fn new(size: f32, weight: f32, line_height: f32) -> Self {
+        Self { size, weight, line_height, letter_spacing: 0.0, uppercase: false }
+    }
+
+    /// The same token with letter spacing.
+    pub const fn spaced(mut self, spacing: f32) -> Self {
+        self.letter_spacing = spacing;
+        self
+    }
+
+    /// The same token rendered upper-case.
+    pub const fn upper(mut self) -> Self {
+        self.uppercase = true;
+        self
+    }
+
+    /// Apply the token to any GPUI text element (size, weight, line height,
+    /// family). Callers add `text_color` from the resolved theme colour.
+    pub fn style<E: Styled>(&self, element: E) -> E {
+        element
+            .font_family(UI_FONT)
+            .font_weight(FontWeight(self.weight))
+            .text_size(px(self.size))
+            .line_height(px(self.line_height))
+    }
+}
+
+/// The Termius typography scale (`theme.typography.fonts`).
+///
+/// Names mirror the original tokens: `r`egular / `b`old, size in px, and the
+/// colour role (`p` = primary/main colour, `w` = white, `s` = secondary/dim).
+pub mod text {
+    use super::TextToken;
+
+    /// 22px bold white — screen titles.
+    pub const B22W: TextToken = TextToken::new(22.0, 700.0, 28.0);
+    /// 18px regular white — large headings.
+    pub const R18W: TextToken = TextToken::new(18.0, 450.0, 23.0);
+    /// 17px regular dim — section headings.
+    pub const R17W: TextToken = TextToken::new(17.0, 450.0, 22.0);
+    /// 16px bold primary — dialog titles.
+    pub const B16P: TextToken = TextToken::new(16.0, 700.0, 20.0);
+    /// 14px regular primary — body text.
+    pub const R14P: TextToken = TextToken::new(14.0, 450.0, 18.0);
+    /// 14px regular dim — secondary body / descriptions.
+    pub const R14S: TextToken = TextToken::new(14.0, 450.0, 18.0);
+    /// 14px bold primary — emphasised body.
+    pub const B14P: TextToken = TextToken::new(14.0, 700.0, 18.0);
+    /// 12px regular primary — captions, list meta.
+    pub const R12P: TextToken = TextToken::new(12.0, 450.0, 15.0);
+    /// 12px regular white — captions on coloured surfaces.
+    pub const R12W: TextToken = TextToken::new(12.0, 450.0, 15.0);
+    /// 12px regular dim.
+    pub const R12S: TextToken = TextToken::new(12.0, 450.0, 15.0);
+    /// 12px bold primary — list item titles.
+    pub const B12P: TextToken = TextToken::new(12.0, 700.0, 15.0);
+    /// 12px bold white, 23px line, 1px tracking, upper-case — group headers.
+    pub const B12WU: TextToken = TextToken::new(12.0, 700.0, 23.0).spaced(1.0).upper();
+    /// 11px bold white.
+    pub const B11W: TextToken = TextToken::new(11.0, 700.0, 14.0);
+    /// 10px regular dim — micro captions.
+    pub const R10S: TextToken = TextToken::new(10.0, 450.0, 13.0);
+    /// 9px bold, 1.13px tracking, 23px line, upper-case — nav section labels.
+    pub const R9U: TextToken = TextToken::new(9.0, 700.0, 23.0).spaced(1.13).upper();
+    /// 8px bold white.
+    pub const R8W: TextToken = TextToken::new(8.0, 700.0, 10.0);
+}
+
 
 /// Which palette the app is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

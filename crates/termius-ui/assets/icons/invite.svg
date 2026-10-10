@@ -1,0 +1,39 @@
+<svg width="540" height="600" viewBox="0 0 540 600" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_1848_4223)">
+<g filter="url(#filter0_f_1848_4223)">
+<ellipse cx="270.5" cy="300" rx="242" ry="138.5" transform="rotate(90 270.5 300)" fill="url(#paint0_radial_1848_4223)" fill-opacity="0.6"/>
+</g>
+<rect width="170" height="170" rx="35" transform="matrix(1 0 0 -1 185 385)" fill="url(#paint1_linear_1848_4223)" fill-opacity="0.6"/>
+<rect width="170" height="170" rx="35" transform="matrix(1 0 0 -1 185 385)" fill="url(#paint2_linear_1848_4223)" fill-opacity="0.4"/>
+<rect x="0.5" y="-0.5" width="169" height="169" rx="34.5" transform="matrix(1 0 0 -1 185 384)" stroke="url(#paint3_linear_1848_4223)" stroke-opacity="0.7"/>
+<path d="M294.098 301.348C300.214 301.349 305.254 306.375 305.254 312.483C305.254 318.56 300.157 323.627 294.098 323.627C287.999 323.627 282.958 318.596 282.958 312.483C282.958 306.375 287.999 301.348 294.098 301.348ZM294.098 305.441C293.207 305.441 292.629 306.045 292.629 306.914V311.002H288.533C287.639 311.002 287.047 311.583 287.047 312.487C287.047 313.377 287.651 313.96 288.533 313.96H292.629V318.081C292.629 318.946 293.207 319.546 294.098 319.546C295.005 319.546 295.583 318.945 295.583 318.081V313.96H299.683C300.569 313.96 301.147 313.377 301.147 312.487C301.147 311.583 300.569 311.002 299.683 311.002H295.583V306.914C295.583 306.037 295.005 305.441 294.098 305.441ZM250.672 299.536C254.274 299.536 257.402 300.526 259.907 302.072C256.299 305.207 254.259 309.207 254.259 312.824C254.259 313.917 254.481 314.974 255.007 315.893H238.741C235.847 315.893 234.749 314.683 234.749 312.538C234.749 306.674 241 299.536 250.672 299.536ZM275.682 299.597C279.246 299.597 282.391 300.369 285.019 301.603C281.897 304.214 279.9 308.133 279.899 312.483C279.899 313.658 280.044 314.801 280.333 315.889H262.055C258.715 315.889 257.405 314.826 257.405 312.824C257.405 307.256 264.47 299.597 275.682 299.597ZM250.689 279.712C254.764 279.712 258.288 283.221 258.288 287.873C258.288 292.577 254.789 296.248 250.689 296.248C246.576 296.248 243.078 292.577 243.078 287.908C243.078 283.296 246.602 279.712 250.689 279.712ZM275.699 276.764C280.405 276.764 284.431 280.819 284.431 286.137C284.431 291.56 280.434 295.755 275.699 295.755C270.968 295.755 266.972 291.56 266.972 286.177C266.972 280.89 270.994 276.765 275.699 276.764Z" fill="#A2CEF5" fill-opacity="0.7"/>
+</g>
+<defs>
+<filter id="filter0_f_1848_4223" x="28" y="-46" width="485" height="692" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+<feGaussianBlur stdDeviation="52" result="effect1_foregroundBlur_1848_4223"/>
+</filter>
+<radialGradient id="paint0_radial_1848_4223" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(270.5 300.208) rotate(-90) scale(213.686 220.688)">
+<stop offset="0.0109635" stop-color="#0D6D75"/>
+<stop offset="0.533542" stop-color="#1E6DB5" stop-opacity="0.45"/>
+<stop offset="1" stop-color="#264E72" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="paint1_linear_1848_4223" x1="-2.1821e-05" y1="22.1013" x2="110.097" y2="120.85" gradientUnits="userSpaceOnUse">
+<stop stop-color="#4D6EA9" stop-opacity="0.4"/>
+<stop offset="1" stop-color="#0C1A38" stop-opacity="0"/>
+</linearGradient>
+<linearGradient id="paint2_linear_1848_4223" x1="-40.375" y1="8.68495e-07" x2="199.651" y2="208.581" gradientUnits="userSpaceOnUse">
+<stop stop-color="#060A1D" stop-opacity="0"/>
+<stop offset="0.00423948" stop-color="#4797F8" stop-opacity="0.7"/>
+<stop offset="1" stop-color="#060A1D" stop-opacity="0"/>
+</linearGradient>
+<linearGradient id="paint3_linear_1848_4223" x1="84.9999" y1="-9.38838e-05" x2="-46.964" y2="55.8075" gradientUnits="userSpaceOnUse">
+<stop stop-color="#346292"/>
+<stop offset="1" stop-color="#1A2F54"/>
+</linearGradient>
+<clipPath id="clip0_1848_4223">
+<path d="M0 9.99999C0 4.47714 4.47715 0 10 0H530C535.523 0 540 4.47715 540 10V590C540 595.523 535.523 600 530 600H9.99999C4.47715 600 0 595.523 0 590V9.99999Z" fill="white"/>
+</clipPath>
+</defs>
+</svg>
