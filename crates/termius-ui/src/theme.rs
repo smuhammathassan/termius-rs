@@ -82,6 +82,26 @@ pub struct TermiusTheme {
     pub term_cursor: Rgba,
     /// The 16 ANSI colors (`TerminalColor::Indexed(0..=15)`).
     pub ansi: [Rgba; 16],
+    // --- real Termius design tokens (resolved from the original CSS vars) --
+    pub card_a: Rgba,
+    pub card_b: Rgba,
+    pub card_c: Rgba,
+    pub title: Rgba,
+    pub text_common: Rgba,
+    pub border_basic: Rgba,
+    pub border_light: Rgba,
+    pub border_strong: Rgba,
+    pub border_accent: Rgba,
+    pub primary: Rgba,
+    pub primary_dark: Rgba,
+    pub primary_light: Rgba,
+    pub blueberry: Rgba,
+    pub yellow: Rgba,
+    pub green: Rgba,
+    pub backdrop: Rgba,
+    pub corner_radius_small: f32,
+    pub corner_radius_medium: f32,
+    pub corner_radius_large: f32,
 }
 
 impl Global for TermiusTheme {}
@@ -91,40 +111,59 @@ impl TermiusTheme {
     pub fn dark() -> Self {
         Self {
             mode: ThemeMode::Dark,
-            background: rgb(0x15, 0x17, 0x28),
-            foreground: rgb(0xd7, 0xd9, 0xe5),
-            accent: rgb(0x4a, 0x9e, 0xff),
-            border: rgb(0x2c, 0x2f, 0x45),
-            selection: with_alpha(rgb(0x4a, 0x9e, 0xff), 0.30),
-            sidebar_background: rgb(0x17, 0x1a, 0x2b),
-            tab_background: rgb(0x11, 0x13, 0x22),
-            tab_active: rgb(0x23, 0x27, 0x41),
-            status_background: rgb(0x11, 0x13, 0x22),
-            muted: rgb(0x6c, 0x73, 0x91),
-            danger: rgb(0xe0, 0x55, 0x61),
-            success: rgb(0x57, 0xb2, 0x6f),
-            hover: rgb(0x23, 0x27, 0x41),
-            term_background: rgb(0x15, 0x17, 0x28),
-            term_foreground: rgb(0xd7, 0xd9, 0xe5),
-            term_cursor: rgb(0x8f, 0x93, 0xa8),
+            background: rgb(0x1d, 0x20, 0x33),   // --main-bg (dark-grey-2)
+            foreground: rgb(0xf7, 0xf9, 0xfa),   // --c-title
+            accent: rgb(0x20, 0x91, 0xf6),        // --blue
+            border: rgb(0x3e, 0x42, 0x57),        // --border-strong
+            selection: with_alpha(rgb(0x20, 0x91, 0xf6), 0.50), // --blue-a50
+            sidebar_background: rgb(0x14, 0x17, 0x29), // --dark-grey-1
+            tab_background: rgb(0x14, 0x17, 0x29),
+            tab_active: rgb(0x28, 0x2b, 0x3d),    // --card-a
+            status_background: rgb(0x14, 0x17, 0x29),
+            muted: rgb(0xa4, 0xb3, 0xba),         // --c-text-common
+            danger: rgb(0xf2, 0x5e, 0x61),        // --red
+            success: rgb(0x21, 0xb5, 0x68),       // --green
+            hover: with_alpha(rgb(0x20, 0x91, 0xf6), 0.10), // --blue-a10
+            term_background: rgb(0x14, 0x17, 0x29),
+            term_foreground: rgb(0xf7, 0xf9, 0xfa),
+            term_cursor: rgb(0x20, 0x91, 0xf6),
             ansi: [
                 rgb(0x23, 0x25, 0x3b), //  0 black
-                rgb(0xe0, 0x55, 0x61), //  1 red
-                rgb(0x57, 0xb2, 0x6f), //  2 green
+                rgb(0xf2, 0x5e, 0x61), //  1 red
+                rgb(0x21, 0xb5, 0x68), //  2 green
                 rgb(0xe5, 0xc0, 0x7b), //  3 yellow
-                rgb(0x52, 0x8b, 0xff), //  4 blue
+                rgb(0x20, 0x91, 0xf6), //  4 blue
                 rgb(0xc6, 0x78, 0xdd), //  5 magenta
                 rgb(0x56, 0xb6, 0xc2), //  6 cyan
-                rgb(0xd7, 0xd9, 0xe5), //  7 white
-                rgb(0x6c, 0x73, 0x91), //  8 bright black
+                rgb(0xf7, 0xf9, 0xfa), //  7 white
+                rgb(0x8d, 0x91, 0xa5), //  8 bright black
                 rgb(0xff, 0x8b, 0x92), //  9 bright red
                 rgb(0x7e, 0xe7, 0x87), // 10 bright green
-                rgb(0xf0, 0xd6, 0x98), // 11 bright yellow
-                rgb(0x82, 0xaa, 0xff), // 12 bright blue
+                rgb(0xff, 0xcb, 0x00), // 11 bright yellow
+                rgb(0x58, 0xad, 0xf8), // 12 bright blue
                 rgb(0xd2, 0xa8, 0xff), // 13 bright magenta
                 rgb(0x8b, 0xe9, 0xfd), // 14 bright cyan
                 rgb(0xff, 0xff, 0xff), // 15 bright white
             ],
+            card_a: rgb(0x28, 0x2b, 0x3d),
+            card_b: rgb(0x1d, 0x20, 0x33),
+            card_c: rgb(0x32, 0x36, 0x4a),
+            title: rgb(0xf7, 0xf9, 0xfa),
+            text_common: rgb(0xa4, 0xb3, 0xba),
+            border_basic: with_alpha(rgb(0x8d, 0x91, 0xa5), 0.25),
+            border_light: with_alpha(rgb(0x8d, 0x91, 0xa5), 0.10),
+            border_strong: rgb(0x3e, 0x42, 0x57),
+            border_accent: rgb(0x20, 0x91, 0xf6),
+            primary: rgb(0x20, 0x91, 0xf6),
+            primary_dark: rgb(0x18, 0x6c, 0xb5),
+            primary_light: rgb(0x58, 0xad, 0xf8),
+            blueberry: rgb(0x66, 0x66, 0xd2),
+            yellow: rgb(0xff, 0xcb, 0x00),
+            green: rgb(0x21, 0xb5, 0x68),
+            backdrop: with_alpha(rgb(0x00, 0x00, 0x00), 0.50),
+            corner_radius_small: 5.0,
+            corner_radius_medium: 10.0,
+            corner_radius_large: 15.0,
         }
     }
 
@@ -132,32 +171,32 @@ impl TermiusTheme {
     pub fn light() -> Self {
         Self {
             mode: ThemeMode::Light,
-            background: rgb(0xf5, 0xf6, 0xfa),
-            foreground: rgb(0x2a, 0x2d, 0x3e),
-            accent: rgb(0x2f, 0x7b, 0xf0),
-            border: rgb(0xd9, 0xdc, 0xe6),
-            selection: with_alpha(rgb(0x2f, 0x7b, 0xf0), 0.22),
-            sidebar_background: rgb(0xee, 0xf0, 0xf6),
-            tab_background: rgb(0xe9, 0xeb, 0xf3),
-            tab_active: rgb(0xff, 0xff, 0xff),
-            status_background: rgb(0xf0, 0xf2, 0xf8),
-            muted: rgb(0x76, 0x7c, 0x94),
-            danger: rgb(0xd6, 0x45, 0x50),
-            success: rgb(0x2e, 0x9e, 0x52),
-            hover: rgb(0xe2, 0xe6, 0xf2),
+            background: rgb(0xff, 0xff, 0xff),   // --main-bg (white)
+            foreground: rgb(0x14, 0x17, 0x29),   // --c-title
+            accent: rgb(0x20, 0x91, 0xf6),        // --blue
+            border: rgb(0xd5, 0xdd, 0xe0),        // --border-strong
+            selection: with_alpha(rgb(0x20, 0x91, 0xf6), 0.20),
+            sidebar_background: rgb(0xf7, 0xf9, 0xfa), // --card-a
+            tab_background: rgb(0xe6, 0xeb, 0xed),     // --card-b
+            tab_active: rgb(0xff, 0xff, 0xff),         // --card-c
+            status_background: rgb(0xf7, 0xf9, 0xfa),
+            muted: rgb(0xa4, 0xb3, 0xba),         // --c-text-common
+            danger: rgb(0xf2, 0x5e, 0x61),        // --red
+            success: rgb(0x21, 0xb5, 0x68),       // --green
+            hover: with_alpha(rgb(0x20, 0x91, 0xf6), 0.10),
             term_background: rgb(0xff, 0xff, 0xff),
-            term_foreground: rgb(0x33, 0x36, 0x48),
-            term_cursor: rgb(0x42, 0x8a, 0x56),
+            term_foreground: rgb(0x14, 0x17, 0x29),
+            term_cursor: rgb(0x20, 0x91, 0xf6),
             ansi: [
                 rgb(0x33, 0x36, 0x48), //  0 black
-                rgb(0xc2, 0x3b, 0x4a), //  1 red
-                rgb(0x2e, 0x9e, 0x52), //  2 green
+                rgb(0xf2, 0x5e, 0x61), //  1 red
+                rgb(0x21, 0xb5, 0x68), //  2 green
                 rgb(0xa8, 0x7c, 0x1a), //  3 yellow
-                rgb(0x2f, 0x6f, 0xd0), //  4 blue
+                rgb(0x20, 0x91, 0xf6), //  4 blue
                 rgb(0x9b, 0x4f, 0xbd), //  5 magenta
                 rgb(0x1f, 0x8a, 0x99), //  6 cyan
                 rgb(0xd6, 0xdd, 0xe0), //  7 white
-                rgb(0x76, 0x7c, 0x94), //  8 bright black
+                rgb(0xa4, 0xb3, 0xba), //  8 bright black
                 rgb(0xe0, 0x55, 0x61), //  9 bright red
                 rgb(0x57, 0xb2, 0x6f), // 10 bright green
                 rgb(0xd9, 0xa6, 0x4a), // 11 bright yellow
@@ -166,6 +205,25 @@ impl TermiusTheme {
                 rgb(0x56, 0xb6, 0xc2), // 14 bright cyan
                 rgb(0xff, 0xff, 0xff), // 15 bright white
             ],
+            card_a: rgb(0xf7, 0xf9, 0xfa),
+            card_b: rgb(0xe6, 0xeb, 0xed),
+            card_c: rgb(0xff, 0xff, 0xff),
+            title: rgb(0x14, 0x17, 0x29),
+            text_common: rgb(0xa4, 0xb3, 0xba),
+            border_basic: with_alpha(rgb(0x79, 0x8c, 0x94), 0.25),
+            border_light: with_alpha(rgb(0x79, 0x8c, 0x94), 0.10),
+            border_strong: rgb(0xd5, 0xdd, 0xe0),
+            border_accent: rgb(0x20, 0x91, 0xf6),
+            primary: rgb(0x20, 0x91, 0xf6),
+            primary_dark: rgb(0x18, 0x6c, 0xb5),
+            primary_light: rgb(0x58, 0xad, 0xf8),
+            blueberry: rgb(0x66, 0x66, 0xd2),
+            yellow: rgb(0xff, 0xcb, 0x00),
+            green: rgb(0x21, 0xb5, 0x68),
+            backdrop: with_alpha(rgb(0x14, 0x17, 0x29), 0.50),
+            corner_radius_small: 5.0,
+            corner_radius_medium: 10.0,
+            corner_radius_large: 15.0,
         }
     }
 
