@@ -47,7 +47,7 @@ use gpui::{
 use termius_core::Keychain;
 
 use crate::app_state::TermiusState;
-use crate::primitives::{Button, EmptyState, SectionHeader, SettingsText};
+use crate::primitives::{EmptyState, SectionHeader, SettingsText};
 use crate::theme::{over, text, theme_of, with_alpha, TermiusTheme, ThemeMode};
 
 /// Fixed mask shown in place of a stored secret.

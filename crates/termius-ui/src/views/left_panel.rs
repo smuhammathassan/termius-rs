@@ -15,7 +15,7 @@
 //! repaint the selected row without rebuilding the whole shell.
 
 use gpui::{
-    div, px, Context, Entity, IntoElement, ParentElement as _, Render,
+    div, px, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
