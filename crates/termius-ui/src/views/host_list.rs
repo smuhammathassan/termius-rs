@@ -965,6 +965,7 @@ impl Render for HostList {
 
         // `i_e.root`: --entity-grid-background, padding 40px 20px, scrollable.
         div()
+            .id("home-scroll")
             .flex()
             .flex_col()
             .size_full()
