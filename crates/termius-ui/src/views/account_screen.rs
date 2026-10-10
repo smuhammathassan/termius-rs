@@ -460,7 +460,7 @@ fn subscription_card(
         PlanStatus::Active => action.secondary(),
         PlanStatus::Expired => action.primary(),
     };
-    let action = action.on_click(cx.listener(|this, _event, _window, cx| {
+    let action = action.on_click(theme, cx.listener(|this, _event, _window, cx| {
         this.open_account_dialog(
             "Manage subscription",
             "Plan checkout and billing arrive with the termius-sync wave.",
@@ -502,7 +502,7 @@ fn teams_section(theme: TermiusTheme, cx: &mut Context<AccountScreen>) -> Div {
         .child(SettingsText::new(TEAMS_NOTE).element(theme))
         .child(
             div().mt(px(10.)).child(
-                Button::new("Enable group sharing").on_click(cx.listener(
+                Button::new("Enable group sharing").on_click(theme, cx.listener(
                     |this, _event, _window, cx| {
                         this.open_account_dialog(
                             "Enable group sharing",
