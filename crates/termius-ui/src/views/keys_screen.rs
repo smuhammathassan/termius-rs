@@ -1,11 +1,20 @@
 //! keys_screen — the **Keys** section: stored SSH key pairs (SSHid) plus a
 //! FIDO2 security-key stub.
 //!
-//! Port of Termius' Keys screen: a header with the `New Key` action, one row
-//! per [`Key`] showing its name, algorithm and passphrase-protection hint,
-//! per-row delete, an [`EmptyState`] while the library has no keys, and a
-//! secondary "Security Keys" block whose `Add FIDO2 Key` button is a visual
-//! stub (the real flow maps to the deferred `termius-fido` crate).
+//! Port of Termius' Keychain → Keys screen. The entity row presenter is `Cw`
+//! (`analysis/readable/_main.js:69838`) — a 14px `primary` title over a 12px
+//! `deprecatedSecondary` description beside the key icon — and the toolbar's
+//! `New Key` action (the `K6e` key chevron cluster, `_main.js:67834`). The
+//! "Security Keys" card mirrors the FIDO2 block whose `Add FIDO2 Key` button is
+//! `AddFIDO2KeyButton-1f6200c9.js` (an accent button: `addCircle` icon +
+//! "Add FIDO2 Key").
+//!
+//! The screen matches the entity-list chrome: a **screen header** (the `Keys`
+//! title + the primary `New Key` action with `addCircle.svg`), a
+//! **search/filter row** (`search.svg` + tag-filter / sort glyphs), and the
+//! **list** — one row per [`Key`] with a leading `key.svg` tile, the name
+//! (`R14P`) over the algorithm / passphrase hint (`R12S`), and a trailing
+//! `dots.svg` overflow affordance (wired to Delete).
 //!
 //! # Wiring (owned by `views`, not this module)
 //!
@@ -13,7 +22,7 @@
 //! // Section::Keys center panel — store the entity once (see `AppShell`):
 //! views::keys_screen::keys_screen(state.clone(), cx)  // -> Entity<KeysScreen>
 //! // Add-Key dialog body (host it via `DialogFrame::child`, which supplies
-//! // the p16/gap10 body padding):
+//! // the frame; this body carries its own action row):
 //! views::keys_screen::key_dialog_body(&dialog, state, cx)
 //! ```
 //!
@@ -30,23 +39,38 @@
 //!   form's text values live in the [`KeysUi`] draft global and only the
 //!   key-type chips can change them today; `Save` therefore writes a *sample*
 //!   [`Key`] (`Key N`, the chosen algorithm, no key material, no timestamps).
-//! * No edit flow yet: clicking a row only highlights it, and `Delete`
-//!   removes the key immediately (Termius confirms first).
-//! * The list does not scroll yet (`overflow_y_scroll` needs a scroll handle
-//!   + scrollbar — the same PORT-TODO as `views::host_list`).
+//! * No edit flow yet: clicking a row only highlights it, and the ⋯ removes the
+//!   key immediately (Termius confirms first).
 
 use gpui::{
-    div, px, AnyElement, App, AppContext as _, BorrowAppContext as _, Context, Div, Entity,
-    Global, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, px, AnyElement, App, AppContext as _, BorrowAppContext as _, ClickEvent, Context, Div,
+    Entity, FontWeight, Global, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Window,
 };
 use termius_core::{Key, KeyType};
 
 use crate::app_state::{Dialog, TermiusState};
-use crate::primitives::{
-    Button, EmptyState, InputField, ListItem, SectionHeader, SettingsSection, SettingsText,
-};
-use crate::theme::{theme_of, TermiusTheme};
+use crate::primitives::{Button, EmptyState, InputField, SettingsSection, SettingsText};
+use crate::theme::{over, text, theme_of, with_alpha, TermiusTheme, ThemeMode, UI_FONT};
+
+// --- layout metrics (from the original CSS) --------------------------------
+/// Primary `New …` button height (Termius' `large` button: `height: 36px`).
+const BUTTON_HEIGHT: f32 = 36.0;
+/// Screen-title band height.
+const TITLE_HEIGHT: f32 = 56.0;
+/// Search/filter band (`HostsFiltersHeader` `height: 45px`).
+const HEADER_HEIGHT: f32 = 45.0;
+/// Entity row height (24px icon tile + two text lines), matching `host_list`.
+const ROW_HEIGHT: f32 = 40.0;
+/// Leading `entityIcon` tile (`width/height: 24px`).
+const ICON_TILE: f32 = 24.0;
+/// Glyph inside the tile.
+const ICON_GLYPH: f32 = 16.0;
+/// The SSH key entity icon.
+const KEY_ICON: &str = "key.svg";
+/// Corner radius for the ⋯ affordance.
+const CORNER: f32 = 4.0;
 
 // ---------------------------------------------------------------------------
 // Ephemeral screen state (gpui global; screens are plain functions)
@@ -106,6 +130,155 @@ fn draft_of(cx: &App) -> KeysUi {
         Some(ui) => ui.clone(),
         None => KeysUi::default(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shared list chrome (local; the primitives have no icon row)
+// ---------------------------------------------------------------------------
+
+/// The primary header action: `addCircle.svg` + label on the accent fill.
+fn new_button(
+    label: &'static str,
+    theme: TermiusTheme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let hover_fill = over(theme.primary, with_alpha(gpui::rgb(0xff_ff_ff), 0.25));
+    div()
+        .id(SharedString::from(format!("new-{label}")))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .h(px(BUTTON_HEIGHT))
+        .px(px(16.))
+        .rounded(px(theme.corner_radius_medium))
+        .bg(theme.primary)
+        .text_color(gpui::rgb(0xff_ff_ff))
+        .font_family(UI_FONT)
+        .text_size(px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .line_height(px(21.))
+        .whitespace_nowrap()
+        .child(crate::icon("addCircle.svg").w(px(16.)).h(px(16.)))
+        .child(SharedString::from(label))
+        .hover(move |hover| hover.bg(hover_fill))
+        .on_click(listener)
+}
+
+/// The display-only search field (`search.svg` + muted placeholder).
+fn search_field(theme: TermiusTheme, placeholder: &'static str) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .flex_1()
+        .min_w(px(0.))
+        .h(px(28.))
+        .px(px(8.))
+        .rounded(px(theme.corner_radius_small))
+        .border_1()
+        .border_color(theme.border_basic)
+        .bg(theme.card_c)
+        .text_color(theme.muted)
+        .child(crate::icon("search.svg").w(px(12.)).h(px(12.)))
+        .child(text::R12P.style(div()).child(SharedString::from(placeholder)))
+}
+
+/// A 24×24 glyph button (the header's filter / sort affordances).
+fn icon_button(theme: TermiusTheme, icon_name: &'static str, id: &'static str) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id))
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(24.))
+        .h(px(24.))
+        .flex_shrink_0()
+        .rounded(px(theme.corner_radius_small))
+        .text_color(theme.muted)
+        .hover(move |hover| hover.bg(theme.hover))
+        .child(crate::icon(icon_name).w(px(14.)).h(px(14.)))
+}
+
+/// The search + tag-filter + sort band (the original `HostsFiltersHeader`).
+fn filter_row(theme: TermiusTheme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .h(px(HEADER_HEIGHT))
+        .px(px(12.))
+        .pt(px(4.))
+        .pb(px(5.))
+        .bg(theme.card_a)
+        .child(search_field(theme, "Search keys"))
+        .child(icon_button(theme, "tags.svg", "keys-filter-tags"))
+        .child(icon_button(theme, "sorting.svg", "keys-sort"))
+}
+
+/// The leading 24×24 `entityIcon` tile for a row.
+fn icon_tile(theme: TermiusTheme, icon_name: &'static str) -> Div {
+    let tile_bg = match theme.mode {
+        ThemeMode::Dark => theme.card_c,
+        ThemeMode::Light => theme.card_b,
+    };
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(ICON_TILE))
+        .h(px(ICON_TILE))
+        .flex_shrink_0()
+        .rounded(px(theme.corner_radius_small))
+        .bg(tile_bg)
+        .text_color(theme.muted)
+        .child(crate::icon(icon_name).w(px(ICON_GLYPH)).h(px(ICON_GLYPH)))
+}
+
+/// The title (`R14P`) over the subtitle (`R12S`) column of a row.
+fn row_column(theme: TermiusTheme, title: String, subtitle: String) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w(px(0.))
+        .child(
+            text::R14P
+                .style(div())
+                .text_color(theme.title)
+                .truncate()
+                .child(SharedString::from(title)),
+        )
+        .child(
+            text::R12S
+                .style(div())
+                .text_color(theme.muted)
+                .truncate()
+                .child(SharedString::from(subtitle)),
+        )
+}
+
+/// The trailing `dots.svg` overflow affordance (the row's context menu).
+///
+/// PORT-TODO(menu): gpui 0.2.2 has no anchored menu host, so the ⋯ stands in
+/// for the context menu whose only wired item is Delete.
+fn dots_button(
+    id: String,
+    theme: TermiusTheme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id))
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(24.))
+        .h(px(24.))
+        .flex_shrink_0()
+        .rounded(px(CORNER))
+        .text_color(theme.muted)
+        .hover(move |hover| hover.bg(theme.hover))
+        .child(crate::icon("dots.svg").w(px(12.)).h(px(4.)))
+        .on_click(listener)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,9 +360,9 @@ fn type_chip(
         .justify_center()
         .h(px(26.))
         .px(px(12.))
-        .rounded(px(4.))
+        .rounded(px(CORNER))
         .border_1()
-        .border_color(theme.border)
+        .border_color(if selected { theme.accent } else { theme.border })
         .text_sm()
         .text_color(if selected {
             // White on the accent fill, matching `Button::primary`.
@@ -212,43 +385,16 @@ fn type_chip(
     ))
 }
 
-/// The trailing delete affordance of one key row.
-///
-/// Hand-rolled (instead of [`Button`]) so every element id stays unique —
-/// `Button` derives its id from the label, and one screen holds one delete
-/// chip per key.
-fn delete_chip(
-    key_id: String,
-    theme: TermiusTheme,
-    cx: &mut Context<KeysScreen>,
-) -> Stateful<Div> {
-    div()
-        .id(SharedString::from(format!("key-delete-{key_id}")))
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(22.))
-        .px(px(10.))
-        .rounded(px(4.))
-        .border_1()
-        .border_color(theme.danger)
-        .text_sm()
-        .text_color(theme.danger)
-        .child("Delete")
-        .on_click(cx.listener(move |this, _event, _window, cx| {
-            this.delete_key(&key_id, cx);
-        }))
-}
-
 // ---------------------------------------------------------------------------
 // The screen
 // ---------------------------------------------------------------------------
 
-/// The Keys screen view: header + key list + the Security Keys stub.
+/// The Keys screen view: header + search/filter row + key list + the Security
+/// Keys stub.
 ///
-/// A separate entity from [`TermiusState`] (gpui leases one entity at a
-/// time): the factory below only mints it, [`Render::render`] reads the
-/// library through the handle, and every click drives `TermiusState` through
+/// A separate entity from [`TermiusState`] (gpui leases one entity at a time):
+/// the factory below only mints it, [`Render::render`] reads the library
+/// through the handle, and every click drives `TermiusState` through
 /// `Entity::update` — the `views::host_list` pattern.
 pub struct KeysScreen {
     state: Entity<TermiusState>,
@@ -284,9 +430,17 @@ impl KeysScreen {
         self.state.update(cx, |state, cx| state.open_dialog(Dialog::AddKey, cx));
     }
 
-    /// Delete one key (the row's Delete chip).
+    /// Delete one key (the row's ⋯).
     fn delete_key(&mut self, key_id: &str, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| state.delete_key(key_id, cx));
+    }
+
+    /// Select one key row (the click-to-select stand-in for the editor).
+    fn select_key(&mut self, key_id: &str, cx: &mut Context<Self>) {
+        cx.update_default_global::<KeysUi, _>(|ui, cx| {
+            ui.selected_key = Some(key_id.to_owned());
+            cx.notify();
+        });
     }
 
     /// Surface the FIDO2 stub note in the status bar.
@@ -308,64 +462,111 @@ impl Render for KeysScreen {
             .flex()
             .items_center()
             .justify_between()
-            .h(px(36.))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(SectionHeader::new("Keys").element(theme))
+            .h(px(TITLE_HEIGHT))
+            .px(px(12.))
             .child(
-                div().px(px(12.)).child(
-                    Button::new("New Key").primary().on_click(
-                        theme,
-                        cx.listener(|this, _event, _window, cx| this.open_add_key(cx)),
-                    ),
-                ),
-            );
+                text::B16P
+                    .style(div())
+                    .text_color(theme.title)
+                    .child(SharedString::from("Keys")),
+            )
+            .child(new_button(
+                "New Key",
+                theme,
+                cx.listener(|this, _event, _window, cx| this.open_add_key(cx)),
+            ));
 
-        let content = if keys.is_empty() {
-            EmptyState::new("No keys", "Add an SSH key to authenticate to your hosts.")
-                .element(theme)
+        let mut list = div()
+            .id("keys-list")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .gap(px(2.))
+            .px(px(8.))
+            .py(px(4.));
+
+        if keys.is_empty() {
+            list = list.child(
+                EmptyState::new("No keys", "Add an SSH key to authenticate to your hosts.")
+                    .element(theme),
+            );
         } else {
-            let mut rows = div().flex().flex_col().gap(px(2.)).px(px(8.)).py(px(8.));
             for key in &keys {
                 let id = key.id.clone();
+                let open_id = id.clone();
+                let delete_id = id.clone();
                 let is_selected = selected.as_deref() == Some(key.id.as_str());
-                let item = ListItem::new(key_label(key), key_subtitle(key))
-                    .selected(is_selected)
-                    .id(id.clone())
-                    .on_click(theme, cx.listener(move |_this, _event, _window, cx| {
-                        cx.update_default_global::<KeysUi, _>(|ui, cx| {
-                            ui.selected_key = Some(id.clone());
-                            cx.notify();
-                        });
-                    }))
-                    .flex_1();
-                rows = rows.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(item)
-                        .child(delete_chip(key.id.clone(), theme, cx)),
+
+                // The whole row carries the selected/hover wash; the content
+                // and the ⋯ are siblings so the ⋯ click never also selects.
+                let wrapper = div()
+                    .id(SharedString::from(format!("key-row-{id}")))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(ROW_HEIGHT))
+                    .px(px(12.))
+                    .rounded(px(theme.corner_radius_small));
+                let wrapper = if is_selected {
+                    wrapper
+                        .bg(theme.card_c)
+                        .hover(move |hover| hover.bg(over(theme.card_c, theme.hover)))
+                } else {
+                    wrapper.hover(move |hover| hover.bg(theme.hover))
+                };
+
+                let content = div()
+                    .id(SharedString::from(format!("key-open-{open_id}")))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(icon_tile(theme, KEY_ICON))
+                    .child(row_column(theme, key_label(key), key_subtitle(key)))
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        this.select_key(&open_id, cx);
+                    }));
+
+                let dots = dots_button(
+                    format!("key-menu-{delete_id}"),
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.delete_key(&delete_id, cx);
+                    }),
                 );
+
+                list = list.child(wrapper.child(content).child(dots));
             }
-            rows
-        };
+        }
 
         // PORT-TODO(termius-fido): the real flow registers/uses a FIDO2
         // (WebAuthn) credential; the button only surfaces that today.
         let security_keys = div().p(px(10.)).child(
             SettingsSection::new("Security Keys")
                 .child(
-                    div().p(px(10.)).child(
-                        SettingsText::new(
-                            "Authenticate to a host with a FIDO2 / hardware security key.",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            crate::icon("hardware_key.svg")
+                                .w(px(16.))
+                                .h(px(16.))
+                                .text_color(theme.muted),
                         )
-                        .element(theme),
-                    ),
+                        .child(
+                            SettingsText::new(
+                                "Authenticate to a host with a FIDO2 / hardware security key.",
+                            )
+                            .element(theme),
+                        ),
                 )
                 .child(
-                    div().px(px(10.)).py(px(8.)).child(
-                        Button::new("Add FIDO2 Key").on_click(
+                    div().pt(px(8.)).child(
+                        Button::new("Add FIDO2 Key").primary().on_click(
                             theme,
                             cx.listener(|this, _event, _window, cx| this.show_fido_note(cx)),
                         ),
@@ -381,15 +582,8 @@ impl Render for KeysScreen {
             .overflow_hidden()
             .text_color(theme.foreground)
             .child(header)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_hidden()
-                    .child(content),
-            )
+            .child(filter_row(theme))
+            .child(list)
             .child(security_keys)
     }
 }
@@ -402,7 +596,10 @@ impl Render for KeysScreen {
 /// fill those in).
 ///
 /// The returned element is meant for [`DialogFrame::child`](crate::primitives::DialogFrame)
-/// (the frame supplies the body padding and, optionally, its own action row).
+/// (the frame supplies the card and title; this body carries its own action
+/// row). Field order mirrors the original `FD` key form
+/// (`_main.js:68481`): Label → Passphrase → Private key, with the port's
+/// algorithm chooser inserted after the label.
 pub fn key_dialog_body(
     dialog: &Dialog,
     state: &TermiusState,
@@ -413,7 +610,7 @@ pub fn key_dialog_body(
     }
     let theme = theme_of(cx);
     let draft = draft_of(cx);
-    // The name `Save` assigns while the draft's Name field is untouched.
+    // The name `Save` assigns while the draft's Label field is untouched.
     let default_name = format!("Key {}", state.library.keys.len() + 1);
 
     let mut types = div().flex().gap(px(6.));
@@ -452,9 +649,9 @@ pub fn key_dialog_body(
     let body = div()
         .flex()
         .flex_col()
-        .gap(px(10.))
+        .gap(px(12.))
         .child(
-            InputField::new("Name", draft.name.clone())
+            InputField::new("Label", draft.name.clone())
                 .placeholder(default_name)
                 .element(theme),
         )
@@ -463,32 +660,44 @@ pub fn key_dialog_body(
                 .flex()
                 .flex_col()
                 .gap(px(4.))
-                .child(div().text_xs().text_color(theme.muted).child("Type"))
+                .child(
+                    div()
+                        .font_family(UI_FONT)
+                        .text_size(px(14.))
+                        .text_color(theme.text_common)
+                        .child(SharedString::from("Type")),
+                )
                 .child(types),
+        )
+        .child(
+            InputField::new("Passphrase", draft.passphrase.clone())
+                .placeholder("Leave empty if unprotected")
+                .element(theme),
         )
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(px(4.))
-                .child(div().text_xs().text_color(theme.muted).child("Private Key"))
+                .child(
+                    div()
+                        .font_family(UI_FONT)
+                        .text_size(px(14.))
+                        .text_color(theme.text_common)
+                        .child(SharedString::from("Private key")),
+                )
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .h(px(92.))
                         .p(px(8.))
-                        .rounded(px(4.))
+                        .rounded(px(theme.corner_radius_small))
                         .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.tab_background)
+                        .border_color(theme.border_basic)
+                        .bg(theme.card_c)
                         .child(SettingsText::new(private_hint).element(theme)),
                 ),
-        )
-        .child(
-            InputField::new("Passphrase", draft.passphrase.clone())
-                .placeholder("Leave empty if unprotected")
-                .element(theme),
         )
         .child(
             SettingsText::new("The passphrase is never stored in the key record.").element(theme),
@@ -588,5 +797,13 @@ mod tests {
         // sync (Keys is where this screen routes).
         assert_eq!(Dialog::AddKey.title(), "Add Key");
         assert_eq!(Dialog::AddKey.section(), Some(crate::navigation::Section::Keys));
+    }
+
+    #[test]
+    fn key_row_icon_is_bundled() {
+        assert!(crate::has_icon(KEY_ICON));
+        assert!(crate::has_icon("hardware_key.svg"));
+        assert!(crate::has_icon("addCircle.svg"));
+        assert!(crate::has_icon("dots.svg"));
     }
 }

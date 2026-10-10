@@ -3,8 +3,25 @@
 //!
 //! Termius' Port Forwarding screen lists every tunnel bound to a host —
 //! `Type :listen → destination` with the bound host and listen interface
-//! underneath — behind a "New Rule" action that opens the add form (type,
-//! ports, destination, host).
+//! underneath — behind a "New forwarding" action that opens the add form
+//! (type, ports, destination, bind address, host).
+//!
+//! # Row anatomy (ported from the original)
+//!
+//! Each row mirrors the recovered `EntityReceipt` / `PortForwardingRulePresenter`
+//! (`analysis/readable/PortForwardingRulePresenter-4942c31a.js`, the
+//! `ConnectedPortForwardings` screen in `analysis/readable/_main.js`):
+//!
+//! * a leading **real icon tile** — `local-port-forwarding-rule.svg`,
+//!   `remote-port-forwarding.svg` or `dynamic-port-forwarding.svg`, chosen by
+//!   the tunnel direction (the presenter's `local_pf` / `remote_pf` /
+//!   `dynamic_pf`);
+//! * the rule summary (`R14P`) over the bound host + listen interface (`R12S`);
+//! * a trailing `dots.svg` overflow affordance;
+//! * hover wash (`--blue-a10`) — the original has no persisted selection here.
+//!
+//! The header is the toolbar from the original: the `Port Forwarding` title and
+//! a primary `New forwarding` button carrying the `addCircle.svg` glyph.
 //!
 //! # Why the list is a view entity
 //!
@@ -28,15 +45,25 @@
 //! [`Entity::read`]: gpui::Entity::read
 
 use gpui::{
-    div, px, AnyElement, AppContext as _, Context, Div, Entity, EntityId, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window,
+    div, px, AnyElement, AppContext as _, ClickEvent, Context, Div, Entity, EntityId, FontWeight,
+    Global, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window,
 };
 use termius_core::{ForwardType, Host, PortForwardingConfig};
 
 use crate::app_state::{Dialog, TermiusState};
-use crate::primitives::{Button, EmptyState, InputField, ListItem, SectionHeader, SettingsText};
-use crate::theme::{theme_of, TermiusTheme};
+use crate::primitives::{Button, EmptyState, InputField, SectionHeader, SettingsText, Switch};
+use crate::theme::{over, text, theme_of, with_alpha, TermiusTheme, ThemeMode};
+
+/// Rule row height: two text lines beside the 28px icon tile.
+const ROW_HEIGHT: f32 = 44.0;
+/// Entity icon tile (`entityIcon`: `24px`, a touch larger to seat the richer
+/// port-forwarding glyph).
+const ICON_TILE: f32 = 28.0;
+/// Glyph inside the icon tile.
+const ICON_GLYPH: f32 = 16.0;
+/// White used for text/glyphs on the accent button fill.
+const ON_ACCENT: gpui::Rgba = gpui::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested without a window)
@@ -52,6 +79,20 @@ fn forward_type_label(forward_type: ForwardType) -> &'static str {
         ForwardType::RemoteAuto => "Remote (auto)",
         ForwardType::LocalSerial => "Local Serial",
         ForwardType::LocalSerialAuto => "Local Serial (auto)",
+    }
+}
+
+/// The leading icon for a rule, ported from
+/// `PortForwardingRulePresenter.icon(..)` (the original `local_pf` / `remote_pf`
+/// / `dynamic_pf` keys) onto the bundled SVG set.
+fn forward_icon(forward_type: ForwardType) -> &'static str {
+    match forward_type {
+        ForwardType::Remote | ForwardType::RemoteAuto => "remote-port-forwarding.svg",
+        ForwardType::Dynamic => "dynamic-port-forwarding.svg",
+        ForwardType::Local
+        | ForwardType::LocalAuto
+        | ForwardType::LocalSerial
+        | ForwardType::LocalSerialAuto => "local-port-forwarding-rule.svg",
     }
 }
 
@@ -100,9 +141,9 @@ fn rule_subtitle(rule: &PortForwardingConfig, hosts: &[Host]) -> String {
 
 /// The add-form selection that outlives one paint.
 ///
-/// gpui gives a free function no local view state, so the chosen type and
-/// host ride in a [`Global`] until Save consumes them; the dialog body reads
-/// it and the type/host controls write it back (repainting through
+/// gpui gives a free function no local view state, so the chosen type, host
+/// and bind-all flag ride in a [`Global`] until Save consumes them; the dialog
+/// body reads it and the controls write it back (repainting through
 /// [`Context::notify`]).
 ///
 /// PORT-TODO: `primitives::InputField` is display-only, so listen/destination
@@ -113,6 +154,8 @@ fn rule_subtitle(rule: &PortForwardingConfig, hosts: &[Host]) -> String {
 struct PortForwardDraft {
     forward_type: ForwardType,
     host_id: Option<String>,
+    /// Bind the listener to `0.0.0.0` (the "Bind to all interfaces" switch).
+    bind_all: bool,
 }
 
 impl Global for PortForwardDraft {}
@@ -120,7 +163,11 @@ impl Global for PortForwardDraft {}
 impl PortForwardDraft {
     /// A fresh Local draft bound to `host_id` (the first host, on open).
     fn with_host(host_id: Option<String>) -> Self {
-        Self { forward_type: ForwardType::Local, host_id }
+        Self {
+            forward_type: ForwardType::Local,
+            host_id,
+            bind_all: false,
+        }
     }
 
     /// The sample listen port shown and saved (1080 is the SOCKS default).
@@ -150,7 +197,7 @@ impl PortForwardDraft {
             destination_host,
             destination_port,
             host_id: self.host_id.clone(),
-            bind_all: false,
+            bind_all: self.bind_all,
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -163,15 +210,100 @@ fn current_draft(cx: &Context<TermiusState>) -> PortForwardDraft {
 }
 
 // ---------------------------------------------------------------------------
+// Row / button chrome
+// ---------------------------------------------------------------------------
+
+/// The primary toolbar action: an accent button with a leading real icon
+/// (`addCircle.svg`), mirroring the original `New forwarding` / `New key`
+/// toolbar button (`Button`'s "substrate" hover, 36px tall, 16px inline
+/// padding, `--corner-radius-medium`).
+fn new_action_button(
+    theme: TermiusTheme,
+    id: &str,
+    label: &'static str,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> Stateful<Div> {
+    let hover_fill = over(theme.primary, with_alpha(ON_ACCENT, 0.25));
+    div()
+        .id(SharedString::from(id.to_owned()))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(6.))
+        .h(px(36.))
+        .px(px(16.))
+        .rounded(px(theme.corner_radius_medium))
+        .bg(theme.primary)
+        .text_color(ON_ACCENT)
+        .font_family(crate::assets::UI_FONT)
+        .text_size(px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
+        .child(crate::icon("addCircle.svg").w(px(14.)).h(px(14.)))
+        .child(label)
+        .hover(move |hover| hover.bg(hover_fill))
+        .on_click(listener)
+}
+
+/// The square entity-icon tile shared by every row (`entityIcon`: card-tinted
+/// square, muted glyph).
+fn icon_tile(theme: TermiusTheme, icon_name: &str) -> Div {
+    let tile_bg = match theme.mode {
+        ThemeMode::Dark => theme.card_c,
+        ThemeMode::Light => theme.card_b,
+    };
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(ICON_TILE))
+        .h(px(ICON_TILE))
+        .flex_shrink_0()
+        .rounded(px(theme.corner_radius_small))
+        .bg(tile_bg)
+        .text_color(theme.muted)
+        .child(crate::icon(icon_name).w(px(ICON_GLYPH)).h(px(ICON_GLYPH)))
+}
+
+/// The trailing `dots.svg` overflow affordance (the original row's context-menu
+/// anchor).
+///
+/// PORT-TODO: gpui 0.2.2 has no anchored popup menu here, so the button stands
+/// in for the context menu's `Remove` item and deletes the rule directly.
+fn row_dots(
+    id: String,
+    theme: TermiusTheme,
+    cx: &mut Context<PortForwardList>,
+) -> Stateful<Div> {
+    let rule_id = id.clone();
+    div()
+        .id(SharedString::from(format!("pf-menu-{id}")))
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(24.))
+        .h(px(24.))
+        .flex_shrink_0()
+        .rounded(px(theme.corner_radius_small))
+        .text_color(theme.muted)
+        .hover(move |hover| hover.bg(theme.hover))
+        .child(crate::icon("dots.svg").w(px(12.)).h(px(4.)))
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            this.delete_rule(&rule_id, cx);
+        }))
+}
+
+// ---------------------------------------------------------------------------
 // The screen
 // ---------------------------------------------------------------------------
 
-/// One painted rule row (the strings [`PortForwardList`] hands to the
-/// primitives; built from a single `TermiusState` read).
+/// One painted rule row (the strings + icon [`PortForwardList`] hands to the
+/// row chrome; built from a single `TermiusState` read).
 struct RuleRow {
     id: String,
     label: String,
     subtitle: String,
+    icon: &'static str,
 }
 
 /// The memoized list view for one `TermiusState`, so repeated renders reuse
@@ -211,6 +343,7 @@ impl PortForwardList {
                 id: rule.id.clone(),
                 label: rule_summary(rule),
                 subtitle: rule_subtitle(rule, &state.library.hosts),
+                icon: forward_icon(rule.forward_type),
             })
             .collect()
     }
@@ -224,10 +357,46 @@ impl PortForwardList {
         });
     }
 
-    /// Drop one rule (the row's Delete button).
+    /// Drop one rule (the row's `dots.svg` menu anchor).
     fn delete_rule(&mut self, rule_id: &str, cx: &mut Context<Self>) {
         self.state
             .update(cx, |state, cx| state.delete_port_forwarding(rule_id, cx));
+    }
+
+    /// One painted rule row: icon tile · title/meta · trailing dots.
+    fn rule_row(&self, row: &RuleRow, theme: TermiusTheme, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id(SharedString::from(format!("pf-row-{}", row.id)))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .h(px(ROW_HEIGHT))
+            .px(px(12.))
+            .rounded(px(theme.corner_radius_small))
+            .text_color(theme.title)
+            .hover(move |hover| hover.bg(theme.hover))
+            .child(icon_tile(theme, row.icon))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(
+                        text::R14P
+                            .style(div())
+                            .truncate()
+                            .child(SharedString::from(row.label.clone())),
+                    )
+                    .child(
+                        text::R12S
+                            .style(div())
+                            .text_color(theme.muted)
+                            .truncate()
+                            .child(SharedString::from(row.subtitle.clone())),
+                    ),
+            )
+            .child(row_dots(row.id.clone(), theme, cx))
     }
 }
 
@@ -236,21 +405,24 @@ impl Render for PortForwardList {
         let theme = theme_of(cx);
         let rows = self.rule_rows(cx);
 
-        // Header: section title + the primary "New Rule" action.
+        // Header: section title + the primary "New forwarding" action
+        // (`addCircle.svg`), ported from the original toolbar.
         let header = div()
             .flex()
             .items_center()
             .justify_between()
-            .pr(px(12.))
+            .h(px(36.))
+            .border_b_1()
+            .border_color(theme.border)
             .child(SectionHeader::new("Port Forwarding").element(theme))
-            .child(
-                Button::new("New Rule").primary().on_click(
-                    theme,
-                    cx.listener(|this, _event, _window, cx| this.open_new_rule(cx)),
-                ),
-            );
+            .child(div().px(px(12.)).child(new_action_button(
+                theme,
+                "pf-new-forwarding",
+                "New forwarding",
+                cx.listener(|this, _event, _window, cx| this.open_new_rule(cx)),
+            )));
 
-        // Body: the rules, or Termius' empty state.
+        // Body: the rules, or Termius' empty state (`V8e` in the original).
         //
         // PORT-TODO: gpui 0.2.2's `Styled` has no scrollable overflow helper
         // (only `overflow_hidden`/`overflow_x/y_hidden`), so long rule lists
@@ -259,34 +431,16 @@ impl Render for PortForwardList {
         let mut body = div().flex().flex_col().flex_1().min_h(px(0.)).overflow_hidden();
         if rows.is_empty() {
             body = body.child(
-                EmptyState::new("No port forwards", "Forward local/remote ports through a host…")
-                    .element(theme),
+                EmptyState::new(
+                    "Set up port forwarding",
+                    "Save port forwarding to access databases, web apps, and other services.",
+                )
+                .element(theme),
             );
         } else {
-            let mut list = div().flex().flex_col().gap(px(4.)).p(px(8.));
+            let mut list = div().flex().flex_col().gap(px(2.)).px(px(8.)).py(px(8.));
             for row in &rows {
-                let id = row.id.clone();
-                // The wrapper id keeps every row's `button-Delete` on its own
-                // dispatch path (gpui element ids form a path, not a set).
-                let row_el = div()
-                    .id(SharedString::from(format!("pf-row-{id}")))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(
-                        ListItem::new(row.label.clone(), row.subtitle.clone())
-                            .id(SharedString::from(format!("pf-{id}")))
-                            .element(theme),
-                    )
-                    .child(
-                        Button::new("Delete").danger().on_click(
-                            theme,
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.delete_rule(&id, cx);
-                            }),
-                        ),
-                    );
-                list = list.child(row_el);
+                list = list.child(self.rule_row(row, theme, cx));
             }
             body = body.child(list);
         }
@@ -301,7 +455,8 @@ impl Render for PortForwardList {
     }
 }
 
-/// The Port Forwarding screen: a column of rules with a "New Rule" action.
+/// The Port Forwarding screen: a column of rules with a "New forwarding"
+/// action.
 ///
 /// Call it while holding a `Context<TermiusState>` (i.e. from inside
 /// `state.update(..)`): it returns a [`PortForwardList`] view, whose own
@@ -339,6 +494,10 @@ pub fn port_forwarding_screen(
 ///
 /// Takes `&TermiusState` because the caller is inside `state.update(..)` —
 /// the leased value is handed over directly, so no `Entity::read` happens.
+///
+/// The returned element is a bare body (with its own action row) that the
+/// shell hosts inside a [`DialogFrame`](crate::primitives::DialogFrame)
+/// card; the frame supplies the title bar and card fill.
 pub fn port_forward_dialog_body(
     dialog: &Dialog,
     state: &TermiusState,
@@ -355,7 +514,8 @@ fn field_label(theme: TermiusTheme, text: &'static str) -> Div {
     div().text_xs().text_color(theme.muted).child(SharedString::from(text))
 }
 
-/// The "Add Port Forward" form: type chooser → ports → host picker → actions.
+/// The "Add Port Forward" form: type chooser → ports → bind switch → host
+/// picker → actions.
 fn add_port_forward_form(state: &TermiusState, cx: &mut Context<TermiusState>) -> AnyElement {
     let theme = theme_of(cx);
     let draft = current_draft(cx);
@@ -377,10 +537,10 @@ fn add_port_forward_form(state: &TermiusState, cx: &mut Context<TermiusState>) -
             .px(px(12.))
             .rounded(px(4.))
             .border_1()
-            .border_color(if selected { theme.accent } else { theme.border })
-            .bg(if selected { theme.accent } else { theme.tab_background })
+            .border_color(if selected { theme.primary } else { theme.border })
+            .bg(if selected { theme.primary } else { theme.tab_background })
             .text_sm()
-            .text_color(if selected { gpui::rgb(0xff_ff_ff) } else { theme.muted })
+            .text_color(if selected { ON_ACCENT } else { theme.muted })
             .child(SharedString::from(label))
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 let mut draft = current_draft(cx);
@@ -392,25 +552,47 @@ fn add_port_forward_form(state: &TermiusState, cx: &mut Context<TermiusState>) -
     }
     form = form.child(chips);
 
-    // ----- ports + destination (display-only values) -----
-    let (destination_host, destination_port) = draft.destination();
+    // ----- ports + destination (display-only sample values) -----
     form = form.child(
         InputField::new("Listen port", draft.listen_port().to_string())
             .placeholder("8080")
             .element(theme),
     );
-    form = form.child(
-        InputField::new("Destination host", destination_host.unwrap_or_default())
-            .placeholder(if dynamic { "not used (SOCKS proxy)" } else { "hostname or IP" })
+    if dynamic {
+        form = form.child(
+            SettingsText::new("A dynamic (SOCKS) rule has no destination — it proxies every connection.")
+                .element(theme),
+        );
+    } else {
+        let (destination_host, destination_port) = draft.destination();
+        form = form.child(
+            InputField::new("Destination host", destination_host.unwrap_or_default())
+                .placeholder("hostname or IP")
+                .element(theme),
+        );
+        form = form.child(
+            InputField::new(
+                "Destination port",
+                destination_port.map(|port| port.to_string()).unwrap_or_default(),
+            )
+            .placeholder("80")
             .element(theme),
-    );
+        );
+    }
+
+    // ----- bind address -----
     form = form.child(
-        InputField::new(
-            "Destination port",
-            destination_port.map(|port| port.to_string()).unwrap_or_default(),
-        )
-        .placeholder(if dynamic { "not used" } else { "80" })
-        .element(theme),
+        Switch::new("Bind to all interfaces", draft.bind_all)
+            .description("Listen on 0.0.0.0 instead of 127.0.0.1.")
+            .on_click(
+                theme,
+                cx.listener(|_this, _event, _window, cx| {
+                    let mut draft = current_draft(cx);
+                    draft.bind_all = !draft.bind_all;
+                    cx.set_global(draft);
+                    cx.notify();
+                }),
+            ),
     );
 
     // ----- host picker -----
@@ -432,16 +614,7 @@ fn add_port_forward_form(state: &TermiusState, cx: &mut Context<TermiusState>) -
         for host in &state.library.hosts {
             let host_id = host.id.clone();
             let selected = draft.host_id.as_deref() == Some(host.id.as_str());
-            let item = ListItem::new(host.label.clone(), host.hostname.clone())
-                .id(SharedString::from(format!("pf-pick-{}", host.id)))
-                .selected(selected)
-                .element(theme)
-                .on_click(cx.listener(move |_this, _event, _window, cx| {
-                    let mut draft = current_draft(cx);
-                    draft.host_id = Some(host_id.clone());
-                    cx.set_global(draft);
-                    cx.notify();
-                }));
+            let item = host_pick_row(theme, host, selected, cx);
             picker = picker.child(item);
         }
         form = form.child(picker);
@@ -472,6 +645,49 @@ fn add_port_forward_form(state: &TermiusState, cx: &mut Context<TermiusState>) -
     );
 
     form.into_any_element()
+}
+
+/// One selectable host row inside the dialog's host picker.
+fn host_pick_row(
+    theme: TermiusTheme,
+    host: &Host,
+    selected: bool,
+    cx: &mut Context<TermiusState>,
+) -> Stateful<Div> {
+    let host_id = host.id.clone();
+    let label = if host.label.trim().is_empty() {
+        host.hostname.clone()
+    } else {
+        host.label.clone()
+    };
+    let mut row = div()
+        .id(SharedString::from(format!("pf-pick-{}", host.id)))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(4.))
+        .rounded(px(theme.corner_radius_small))
+        .text_color(theme.title)
+        .child(text::R14P.style(div()).truncate().child(SharedString::from(label)))
+        .child(
+            text::R12S
+                .style(div())
+                .text_color(theme.muted)
+                .truncate()
+                .child(SharedString::from(host.hostname.clone())),
+        )
+        .on_click(cx.listener(move |_this, _event, _window, cx| {
+            let mut draft = current_draft(cx);
+            draft.host_id = Some(host_id.clone());
+            cx.set_global(draft);
+            cx.notify();
+        }));
+    if selected {
+        row = row.bg(theme.card_c).border_1().border_color(theme.border_accent);
+    }
+    row
 }
 
 #[cfg(test)]
@@ -552,6 +768,28 @@ mod tests {
     }
 
     #[test]
+    fn forward_icons_track_the_presenter() {
+        assert_eq!(forward_icon(ForwardType::Local), "local-port-forwarding-rule.svg");
+        assert_eq!(forward_icon(ForwardType::LocalAuto), "local-port-forwarding-rule.svg");
+        assert_eq!(forward_icon(ForwardType::LocalSerial), "local-port-forwarding-rule.svg");
+        assert_eq!(forward_icon(ForwardType::Remote), "remote-port-forwarding.svg");
+        assert_eq!(forward_icon(ForwardType::RemoteAuto), "remote-port-forwarding.svg");
+        assert_eq!(forward_icon(ForwardType::Dynamic), "dynamic-port-forwarding.svg");
+        // Every icon the row chrome asks for is bundled.
+        for kind in [
+            ForwardType::Local,
+            ForwardType::Remote,
+            ForwardType::Dynamic,
+            ForwardType::LocalAuto,
+            ForwardType::LocalSerialAuto,
+            ForwardType::RemoteAuto,
+            ForwardType::LocalSerial,
+        ] {
+            assert!(crate::has_icon(forward_icon(kind)));
+        }
+    }
+
+    #[test]
     fn draft_samples_drive_what_save_persists() {
         let local = PortForwardDraft::with_host(Some("h1".into()));
         assert_eq!(local.forward_type, ForwardType::Local);
@@ -564,16 +802,28 @@ mod tests {
         assert_eq!(config.destination_host.as_deref(), Some("localhost"));
         assert_eq!(config.destination_port, Some(80));
         assert_eq!(config.listen_interface, "127.0.0.1");
+        assert!(!config.bind_all);
 
         // Dynamic becomes a SOCKS rule: no destination, SOCKS default port.
         let dynamic = PortForwardDraft {
             forward_type: ForwardType::Dynamic,
             host_id: None,
+            bind_all: true,
         };
         let config = dynamic.to_config();
         assert_eq!(config.listen_port, 1080);
         assert!(config.destination_host.is_none());
         assert!(config.destination_port.is_none());
         assert!(config.host_id.is_none());
+        assert!(config.bind_all);
+    }
+
+    #[test]
+    fn rule_row_icons_are_bundled() {
+        assert!(crate::has_icon("local-port-forwarding-rule.svg"));
+        assert!(crate::has_icon("remote-port-forwarding.svg"));
+        assert!(crate::has_icon("dynamic-port-forwarding.svg"));
+        assert!(crate::has_icon("addCircle.svg"));
+        assert!(crate::has_icon("dots.svg"));
     }
 }
