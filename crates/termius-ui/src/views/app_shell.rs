@@ -1,17 +1,41 @@
-//! app_shell — the root view: sidebar + tab bar + terminal panes + status bar.
+//! app_shell — the root view: section sidebar + tab bar + routed content +
+//! status bar + dialog overlay.
 //!
 //! Owns the single [`TermiusState`] entity, installs the app keybindings and
 //! theme global ([`init`]), and opens the main window ([`open_window`]).
+//!
+//! # Routing
+//!
+//! ```text
+//! AppShell
+//! ├── sidebar (⌘B)
+//! │   ├── section nav        — [`Section::ALL`], highlights `current_section`
+//! │   └── contextual list    — Hosts → HostList; others → EmptyState stub
+//! └── center
+//!     ├── TabBar             — open sessions (always)
+//!     ├── routed content     — Hosts → TerminalPane (+ SftpPanel ⌘⇧F)
+//!     │                        Sftp  → TerminalPane + SftpPanel
+//!     │                        other → EmptyState stub
+//!     └── status bar
+//! └── dialog overlay         — scrim + [`DialogFrame`] when a dialog is open
+//! ```
+//!
+//! Later screen waves replace the stubs in place: the section nav, the
+//! contextual list and the routed center all switch on
+//! [`TermiusState::current_section`], and each screen owns its slice of
+//! [`TermiusState`].
 
 use gpui::{
-    actions, div, px, App, AppContext as _, BorrowAppContext, Context, Entity,
+    actions, div, px, AnyElement, App, AppContext as _, BorrowAppContext, Context, Entity,
     InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
     WindowHandle, WindowOptions,
 };
 
-use crate::app_state::TermiusState;
-use crate::theme::{theme_of, TermiusTheme, ThemeMode};
+use crate::app_state::{Dialog, TermiusState};
+use crate::navigation::{sidebar_items, Section};
+use crate::primitives::{Button, DialogFrame, EmptyState, SettingsText};
+use crate::theme::{theme_of, with_alpha, TermiusTheme, ThemeMode};
 use crate::views::{HostList, SftpPanel, TabBar, TerminalPane};
 
 // Global actions bound app-wide (no key context: they fire from anywhere).
@@ -25,11 +49,15 @@ pub const SFTP_WIDTH: f32 = 300.0;
 pub const TAB_BAR_HEIGHT: f32 = 40.0;
 /// Status bar height.
 pub const STATUS_BAR_HEIGHT: f32 = 26.0;
+/// Sidebar section-nav row height.
+const NAV_ROW_HEIGHT: f32 = 28.0;
+/// Sidebar app-header height.
+const SIDEBAR_HEADER_HEIGHT: f32 = 36.0;
 
 /// Install globals + keybindings. Call once from the app's `run` closure.
 ///
-/// PORT-TODO: persist the theme mode through `store.settings()` and restore
-/// it here instead of hardcoding dark.
+/// PORT-TODO: restore `settings.theme_mode` from the store here instead of
+/// hardcoding dark (see [`TermiusState`](crate::app_state::TermiusState)).
 pub fn init(cx: &mut App) {
     cx.set_global(TermiusTheme::dark());
     cx.bind_keys([
@@ -65,8 +93,8 @@ pub fn launch() {
     });
 }
 
-/// The root view: composes the four panels and the status bar, owns the
-/// state, and handles the global actions.
+/// The root view: composes the panels, routes by section, hosts dialogs, and
+/// handles the global actions.
 pub struct AppShell {
     state: Entity<TermiusState>,
     host_list: Entity<HostList>,
@@ -117,12 +145,165 @@ impl AppShell {
         }
     }
 
+    fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.set_section(section, cx));
+    }
+
+    fn close_dialog(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.close_dialog(cx));
+    }
+
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
         cx.update_global::<TermiusTheme, _>(|theme, cx| {
             let next = theme.toggled();
             *theme = next;
             cx.notify();
         });
+    }
+
+    // ----- sidebar --------------------------------------------------------
+
+    /// The left column: section nav + the section's contextual list.
+    fn sidebar(
+        &mut self,
+        theme: TermiusTheme,
+        current: Section,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .overflow_hidden()
+            .bg(theme.sidebar_background)
+            .text_color(theme.foreground)
+            .border_r_1()
+            .border_color(theme.border);
+
+        // App header.
+        column = column.child(
+            div()
+                .flex()
+                .items_center()
+                .h(px(SIDEBAR_HEADER_HEIGHT))
+                .px(px(12.))
+                .border_b_1()
+                .border_color(theme.border)
+                .child(SharedString::from("Termius")),
+        );
+
+        // Section nav (order from `navigation::sidebar_items`).
+        for section in sidebar_items() {
+            let icon = section.icon();
+            let label = section.label();
+            let active = *section == current;
+            let mut row = div()
+                .id(SharedString::from(format!("nav-{label}")))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .h(px(NAV_ROW_HEIGHT))
+                .px(px(12.))
+                .rounded(px(4.))
+                .text_color(if active { theme.foreground } else { theme.muted });
+            if active {
+                row = row.bg(theme.tab_active);
+            }
+            row = row.child(SharedString::from(icon)).child(SharedString::from(label));
+            let target = *section;
+            column = column.child(
+                row.on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.set_section(target, cx);
+                })),
+            );
+        }
+
+        // Contextual list below the nav: the host tree today, stubs elsewhere
+        // (later waves swap each arm for its own panel).
+        let contextual: AnyElement = match current {
+            Section::Hosts => self.host_list.clone().into_any_element(),
+            other => EmptyState::new(
+                format!("{} list", other.label()),
+                "This section's list arrives with its screen.",
+            )
+            .element(theme)
+            .into_any_element(),
+        };
+        column = column.child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_hidden()
+                .child(contextual),
+        );
+        column.into_any_element()
+    }
+
+    // ----- dialog overlay -------------------------------------------------
+
+    /// A full-window scrim + centered [`DialogFrame`] for `dialog`.
+    ///
+    /// Clicking the scrim (outside the card) dismisses the dialog.
+    fn dialog_overlay(
+        &mut self,
+        dialog: &Dialog,
+        theme: TermiusTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = dialog.title();
+        let section_label = dialog
+            .section()
+            .map(|section| section.label())
+            .unwrap_or("Termius")
+            .to_owned();
+        let body = match dialog.message() {
+            Some(message) => message.to_owned(),
+            None => format!("{title} — the {section_label} screen fills this dialog in."),
+        };
+
+        let frame = DialogFrame::new(title)
+            .child(SettingsText::new(body).element(theme))
+            .action(
+                Button::new("Close").primary().on_click(
+                    theme,
+                    cx.listener(|this, _event, _window, cx| this.close_dialog(cx)),
+                ),
+            )
+            .element(theme);
+
+        // Overlay pattern from gpui 0.2.2's own `window/prompts.rs`: absolute
+        // scrim + absolute centered layer, both sized to the window.
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(
+                div()
+                    .size_full()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .bg(with_alpha(gpui::rgb(0x00_0000), 0.55))
+                    .id("dialog-scrim")
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.close_dialog(cx)
+                    })),
+            )
+            .child(
+                div()
+                    .size_full()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(frame),
+            )
+            .into_any_element()
     }
 
     // ----- actions --------------------------------------------------------
@@ -153,13 +334,15 @@ impl AppShell {
 impl Render for AppShell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme_of(cx);
-        let (sidebar, sftp, status, sessions) = {
+        let (sidebar, sftp, status, sessions, section, dialog) = {
             let state = self.state.read(cx);
             (
                 state.sidebar_visible,
                 state.sftp_visible,
                 state.status_text.clone(),
                 state.sessions.len(),
+                state.current_section,
+                state.active_dialog.clone(),
             )
         };
 
@@ -179,6 +362,7 @@ impl Render for AppShell {
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .child(SharedString::from(section.label()))
                 .child(SharedString::from(status))
                 .child(SharedString::from(format!("{sessions} open"))),
         );
@@ -215,29 +399,54 @@ impl Render for AppShell {
                 .child(theme_btn),
         );
 
-        // Center column: tabs → (terminal | files).
+        // Center column: tabs → routed content → status bar.
         let mut center = div().flex().flex_col().flex_1().min_h(px(0.));
         center = center.child(self.tab_bar.clone());
+
         let mut middle = div().flex().flex_row().flex_1().min_h(px(0.));
-        middle = middle.child(self.terminal.clone());
-        if sftp {
-            middle = middle.child(
-                div().w(px(SFTP_WIDTH)).min_w(px(SFTP_WIDTH)).child(self.sftp.clone()),
-            );
+        match section {
+            Section::Hosts => {
+                middle = middle.child(self.terminal.clone());
+                if sftp {
+                    middle = middle.child(
+                        div().w(px(SFTP_WIDTH)).min_w(px(SFTP_WIDTH)).child(self.sftp.clone()),
+                    );
+                }
+            }
+            Section::Sftp => {
+                // The SFTP screen is the browser beside the live terminal
+                // (`TermiusState::set_section` opens the panel on entry).
+                middle = middle.child(self.terminal.clone());
+                middle = middle.child(
+                    div().w(px(SFTP_WIDTH)).min_w(px(SFTP_WIDTH)).child(self.sftp.clone()),
+                );
+            }
+            other => {
+                middle = middle.child(
+                    EmptyState::new(
+                        format!("{} — coming soon", other.label()),
+                        "This screen is filled in by its section wave.",
+                    )
+                    .element(theme),
+                );
+            }
         }
         center = center.child(middle);
         center = center.child(status_bar);
 
-        // Body: sidebar + center.
+        // Body: section sidebar + center.
         let mut body = div().flex().flex_row().flex_1().min_h(px(0.));
         if sidebar {
             body = body.child(
-                div().w(px(SIDEBAR_WIDTH)).min_w(px(SIDEBAR_WIDTH)).child(self.host_list.clone()),
+                div()
+                    .w(px(SIDEBAR_WIDTH))
+                    .min_w(px(SIDEBAR_WIDTH))
+                    .child(self.sidebar(theme, section, cx)),
             );
         }
         body = body.child(center);
 
-        div().id("app-shell")
+        let mut root = div().id("app-shell")
             .size_full()
             .flex()
             .flex_col()
@@ -246,6 +455,12 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_sftp))
             .on_action(cx.listener(Self::on_close_active_tab))
-            .child(body)
+            .child(body);
+
+        // Dialog overlay paints last, above everything.
+        if let Some(dialog) = dialog.as_ref() {
+            root = root.child(self.dialog_overlay(dialog, theme, cx));
+        }
+        root
     }
 }

@@ -6,7 +6,15 @@
 //!
 //! * [`app_state`] — [`TermiusState`], the Redux-replacement entity: library
 //!   records, selection, open sessions (main-thread `Terminal` + engine
-//!   bridge), tabs, UI flags.
+//!   bridge), tabs, UI flags, plus the screen contract: current section,
+//!   active dialog, port forwards / known hosts / settings / account and the
+//!   CRUD helpers the screens drive.
+//! * [`navigation`] — [`Section`], the sidebar routing enum (+ labels/icons
+//!   and the settings sub-tabs).
+//! * [`primitives`] — the reusable components every screen composes from:
+//!   [`EmptyState`], [`Button`], [`InputField`], [`Switch`], [`ListItem`],
+//!   [`SectionHeader`], [`SettingsSection`]/[`SettingsTitle`]/[`SettingsText`]
+//!   and [`DialogFrame`].
 //! * [`theme`] — the centralized dark/light palette and terminal ANSI
 //!   resolution.
 //! * [`views`] — one `Render` impl per panel, composed by
@@ -29,14 +37,24 @@ pub mod app_state;
 
 pub mod error;
 
+pub mod navigation;
+
+pub mod primitives;
+
 pub mod theme;
 
 pub mod views;
 
 pub use app_state::{
-    active_after_close, parent_path, Library, Session, SessionStatus, SftpState, TermiusState,
+    active_after_close, dialog_after, parent_path, AccountInfo, Dialog, DialogIntent, Library,
+    Session, SessionStatus, SettingsState, SftpState, TermiusState,
 };
 pub use error::{Result, UiError};
+pub use navigation::{settings_tabs, sidebar_items, Section, SidebarItem, SETTINGS_TABS};
+pub use primitives::{
+    Button, ButtonVariant, DialogFrame, EmptyState, InputField, ListItem, SectionHeader,
+    SettingsSection, SettingsText, SettingsTitle, Switch,
+};
 pub use theme::{theme_of, TermiusTheme, ThemeMode};
 pub use views::{
     init, launch, open_window, AppShell, HostList, SftpPanel, TabBar, TerminalPane, TreeRow,

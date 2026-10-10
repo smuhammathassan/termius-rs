@@ -21,12 +21,26 @@
 //!
 //! Storage (`Store` is synchronous `std::Mutex`) is opened and listed through
 //! `cx.background_executor()`, never on the render thread.
+//!
+//! # Screen contract (UI waves)
+//!
+//! Besides the session plumbing, the state carries the per-section slices the
+//! screens render ([`TermiusState::library`], [`TermiusState::port_forwardings`],
+//! [`TermiusState::known_hosts`], [`TermiusState::settings`],
+//! [`TermiusState::account`]), the navigation target
+//! ([`TermiusState::current_section`], set through
+//! [`TermiusState::set_section`]) and the modal host
+//! ([`TermiusState::active_dialog`], [`TermiusState::open_dialog`],
+//! [`TermiusState::close_dialog`]). CRUD helpers (`add_host`,
+//! `delete_snippet`, …) mutate the slice, best-effort persist through the
+//! held [`Store`], then `cx.notify()`.
 
 use std::sync::{Arc, OnceLock};
 
 use gpui::Context;
 use termius_core::{
-    AuthMethod, ConnectionParams, Group, Host, Identity, Key, Keychain, Snippet, TerminalSize,
+    AuthMethod, ConnectionParams, Group, Host, Identity, Key, Keychain, KnownHost,
+    PortForwardingConfig, RecordId, Snippet, TerminalSize,
 };
 use termius_ssh::{join_path, Connector, SftpClient, SftpEntry};
 use termius_storage::Store;
@@ -36,6 +50,8 @@ use termius_terminal::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{Result, UiError};
+use crate::navigation::Section;
+use crate::theme::ThemeMode;
 
 /// Bounded input queue per session (keystrokes + control commands).
 const INPUT_CAPACITY: usize = 256;
@@ -164,6 +180,164 @@ impl Library {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Navigation, dialogs and settings (the screen-side contract)
+// ---------------------------------------------------------------------------
+
+/// A modal the shell hosts on top of the whole window.
+///
+/// Bodies are filled in by the owning screen; for now the shell renders a
+/// stub card (title + placeholder body + close button) — see
+/// [`views::AppShell`](crate::views::AppShell).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dialog {
+    /// "Add Host" form.
+    AddHost,
+    /// Edit the host with this id.
+    EditHost(RecordId),
+    /// "Add Snippet" form.
+    AddSnippet,
+    /// Edit the snippet with this id.
+    EditSnippet(RecordId),
+    /// "Add Key" form.
+    AddKey,
+    /// "Add Port Forward" form.
+    AddPortForward,
+    /// A generic confirmation (delete…).
+    Confirm { title: String, message: String },
+}
+
+impl Dialog {
+    /// The dialog's title-bar text.
+    pub fn title(&self) -> String {
+        match self {
+            Self::AddHost => "Add Host".to_owned(),
+            Self::EditHost(_) => "Edit Host".to_owned(),
+            Self::AddSnippet => "Add Snippet".to_owned(),
+            Self::EditSnippet(_) => "Edit Snippet".to_owned(),
+            Self::AddKey => "Add Key".to_owned(),
+            Self::AddPortForward => "Add Port Forward".to_owned(),
+            Self::Confirm { title, .. } => title.clone(),
+        }
+    }
+
+    /// The section whose screen owns this dialog (`None` for confirmations,
+    /// which any section can raise).
+    pub fn section(&self) -> Option<Section> {
+        match self {
+            Self::AddHost | Self::EditHost(_) => Some(Section::Hosts),
+            Self::AddSnippet | Self::EditSnippet(_) => Some(Section::Snippets),
+            Self::AddKey => Some(Section::Keys),
+            Self::AddPortForward => Some(Section::PortForwarding),
+            Self::Confirm { .. } => None,
+        }
+    }
+
+    /// The confirmation message (only [`Dialog::Confirm`] has one).
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            Self::Confirm { message, .. } => Some(message.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// User intent against the dialog host: the pure input to [`dialog_after`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogIntent {
+    /// Show `dialog`, replacing whatever is open.
+    Open(Dialog),
+    /// Dismiss whatever is open.
+    Close,
+}
+
+/// What the active dialog becomes after `intent`.
+///
+/// The contract (kept free of `Context` so it is unit-testable without a
+/// window):
+/// * `Open` **replaces** the active dialog — dialogs never stack,
+/// * `Close` always clears — closing an already-closed host is a no-op.
+pub fn dialog_after(active: Option<Dialog>, intent: DialogIntent) -> Option<Dialog> {
+    match intent {
+        DialogIntent::Open(dialog) => Some(dialog),
+        DialogIntent::Close => None,
+    }
+}
+
+/// The app settings a Settings screen edits.
+///
+/// Defaults mirror the shipped Termius appearance (dark theme, Menlo 13).
+///
+/// PORT-TODO: persist through `store.settings()` (key/value) and apply
+/// `theme_mode` to the [`TermiusTheme`](crate::theme::TermiusTheme) global on
+/// change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingsState {
+    /// Palette the app should show (see [`ThemeMode`]).
+    pub theme_mode: ThemeMode,
+    /// Terminal font family name.
+    pub font_family: String,
+    /// Terminal font size in points.
+    pub font_size: u16,
+    /// Terminal scrollback capacity in lines.
+    pub scrollback_lines: usize,
+    /// Blink the terminal cursor.
+    pub cursor_blink: bool,
+    /// Reconnect dropped sessions automatically.
+    pub auto_reconnect: bool,
+}
+
+impl Default for SettingsState {
+    fn default() -> Self {
+        Self {
+            theme_mode: ThemeMode::Dark,
+            font_family: "Menlo".to_owned(),
+            font_size: 13,
+            scrollback_lines: 10_000,
+            cursor_blink: true,
+            auto_reconnect: true,
+        }
+    }
+}
+
+/// The signed-in account summary (Account / Team screens).
+///
+/// `None` on [`TermiusState::account`] means signed out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountInfo {
+    /// Sign-in email (empty while local-only).
+    pub email: String,
+    /// Subscription plan label ("Free", "Pro"…).
+    pub plan: String,
+    /// How many devices are synced to this account.
+    pub device_count: usize,
+}
+
+impl Default for AccountInfo {
+    fn default() -> Self {
+        Self {
+            email: String::new(),
+            plan: "Free".to_owned(),
+            device_count: 0,
+        }
+    }
+}
+
+/// A best-effort unique id for records created outside storage
+/// (`<prefix>-<millis>-<seq>`).
+///
+/// Termius proper uses UUIDv4; the local store only needs a stable unique
+/// string, and no uuid crate is in the workspace yet.
+fn fresh_id(prefix: &str) -> RecordId {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    format!("{prefix}-{millis}-{}", SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
 /// The Redux-shaped application state, as one GPUI entity.
 pub struct TermiusState {
     pub library: Library,
@@ -181,6 +355,19 @@ pub struct TermiusState {
     pub sftp_visible: bool,
     /// Status-bar text.
     pub status_text: String,
+    // ----- screen contract (navigation, dialogs, per-section slices) -----
+    /// The sidebar section currently routed in the shell.
+    pub current_section: Section,
+    /// The modal currently hosted above the window, if any.
+    pub active_dialog: Option<Dialog>,
+    /// Port-forwarding rules (Port Forwarding section).
+    pub port_forwardings: Vec<PortForwardingConfig>,
+    /// Pinned server fingerprints (Keychain / host-key prompts).
+    pub known_hosts: Vec<KnownHost>,
+    /// App settings (Settings section; defaults until persisted).
+    pub settings: SettingsState,
+    /// Signed-in account, if any (`None` = signed out).
+    pub account: Option<AccountInfo>,
     next_session_seq: u64,
 }
 
@@ -198,6 +385,12 @@ impl TermiusState {
             sidebar_visible: true,
             sftp_visible: false,
             status_text: "Loading hosts…".to_owned(),
+            current_section: Section::Hosts,
+            active_dialog: None,
+            port_forwardings: Vec::new(),
+            known_hosts: Vec::new(),
+            settings: SettingsState::default(),
+            account: None,
             next_session_seq: 0,
         };
         state.spawn_load_library(cx);
@@ -223,6 +416,8 @@ impl TermiusState {
                             loaded.library.groups.len()
                         );
                         state.library = loaded.library;
+                        state.port_forwardings = loaded.port_forwardings;
+                        state.known_hosts = loaded.known_hosts;
                         state.store = Some(loaded.store);
                         state.library_error = None;
                     }
@@ -272,6 +467,38 @@ impl TermiusState {
                 self.sftp_list(&session_id, path, cx);
             }
         }
+        cx.notify();
+    }
+
+    // ----- navigation / dialogs ------------------------------------------
+
+    /// Route the shell to a section (sidebar nav).
+    ///
+    /// Landing on [`Section::Sftp`] also opens the SFTP side panel (the same
+    /// affordance as ⌘⇧F) so the section's browser is reachable immediately.
+    pub fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if self.current_section == section {
+            return;
+        }
+        self.current_section = section;
+        if section == Section::Sftp && !self.sftp_visible {
+            self.toggle_sftp(cx);
+        }
+        cx.notify();
+    }
+
+    /// Show a modal on top of the window (replaces any open dialog).
+    pub fn open_dialog(&mut self, dialog: Dialog, cx: &mut Context<Self>) {
+        self.active_dialog = dialog_after(self.active_dialog.take(), DialogIntent::Open(dialog));
+        cx.notify();
+    }
+
+    /// Dismiss the active dialog (no-op when none is open).
+    pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.active_dialog.is_none() {
+            return;
+        }
+        self.active_dialog = dialog_after(self.active_dialog.take(), DialogIntent::Close);
         cx.notify();
     }
 
@@ -718,6 +945,141 @@ impl TermiusState {
         self.sftp_list(session_id, path, cx);
     }
 
+    // ----- library CRUD ---------------------------------------------------
+    //
+    // Screens mutate the in-memory slice first (the UI always stays
+    // responsive), then best-effort persist through the held store: a failed
+    // write is logged and surfaced in `status_text`, never blocking the
+    // render thread. Empty ids are minted with `fresh_id`.
+
+    /// Best-effort persistence through the held store.
+    fn persist<F>(&mut self, what: &str, op: F)
+    where
+        F: FnOnce(&Store) -> termius_storage::Result<()>,
+    {
+        let Some(store) = self.store.as_ref() else { return };
+        if let Err(err) = op(store) {
+            tracing::warn!(error = %err, record = what, "persist failed");
+            self.status_text = format!("Save failed ({what}): {err}");
+        }
+    }
+
+    /// Create a host (minting an id when the caller left it empty).
+    pub fn add_host(&mut self, mut host: Host, cx: &mut Context<Self>) {
+        if host.id.is_empty() {
+            host.id = fresh_id("host");
+        }
+        self.persist("host", |store| store.hosts().create(&host).map(|_| ()));
+        self.library.hosts.push(host);
+        cx.notify();
+    }
+
+    /// Replace (upsert) the host with the same id.
+    pub fn update_host(&mut self, mut host: Host, cx: &mut Context<Self>) {
+        if host.id.is_empty() {
+            host.id = fresh_id("host");
+        }
+        self.persist("host", |store| store.hosts().update(&host).map(|_| ()));
+        match self.library.hosts.iter().position(|existing| existing.id == host.id) {
+            Some(index) => self.library.hosts[index] = host,
+            None => self.library.hosts.push(host),
+        }
+        cx.notify();
+    }
+
+    /// Delete a host, its orphaned forwards, and a matching selection.
+    pub fn delete_host(&mut self, host_id: &str, cx: &mut Context<Self>) {
+        self.persist("host", |store| store.hosts().delete(host_id).map(|_| ()));
+        self.library.hosts.retain(|host| host.id != host_id);
+        self.port_forwardings
+            .retain(|forward| forward.host_id.as_deref() != Some(host_id));
+        if self.selected_host.as_deref() == Some(host_id) {
+            self.selected_host = None;
+        }
+        cx.notify();
+    }
+
+    /// Create a snippet (minting an id when the caller left it empty).
+    pub fn add_snippet(&mut self, mut snippet: Snippet, cx: &mut Context<Self>) {
+        if snippet.id.is_empty() {
+            snippet.id = fresh_id("snippet");
+        }
+        self.persist("snippet", |store| store.snippets().create(&snippet).map(|_| ()));
+        self.library.snippets.push(snippet);
+        cx.notify();
+    }
+
+    /// Replace (upsert) the snippet with the same id.
+    pub fn update_snippet(&mut self, mut snippet: Snippet, cx: &mut Context<Self>) {
+        if snippet.id.is_empty() {
+            snippet.id = fresh_id("snippet");
+        }
+        self.persist("snippet", |store| store.snippets().update(&snippet).map(|_| ()));
+        match self
+            .library
+            .snippets
+            .iter()
+            .position(|existing| existing.id == snippet.id)
+        {
+            Some(index) => self.library.snippets[index] = snippet,
+            None => self.library.snippets.push(snippet),
+        }
+        cx.notify();
+    }
+
+    /// Delete a snippet.
+    pub fn delete_snippet(&mut self, snippet_id: &str, cx: &mut Context<Self>) {
+        self.persist("snippet", |store| store.snippets().delete(snippet_id).map(|_| ()));
+        self.library.snippets.retain(|snippet| snippet.id != snippet_id);
+        cx.notify();
+    }
+
+    /// Create a key pair record (minting an id when the caller left it empty).
+    pub fn add_key(&mut self, mut key: Key, cx: &mut Context<Self>) {
+        if key.id.is_empty() {
+            key.id = fresh_id("key");
+        }
+        self.persist("key", |store| store.keys().create(&key).map(|_| ()));
+        self.library.keys.push(key);
+        cx.notify();
+    }
+
+    /// Delete a key (and clear the binding on hosts that referenced it).
+    pub fn delete_key(&mut self, key_id: &str, cx: &mut Context<Self>) {
+        self.persist("key", |store| store.keys().delete(key_id).map(|_| ()));
+        self.library.keys.retain(|key| key.id != key_id);
+        for host in &mut self.library.hosts {
+            if host.key_id.as_deref() == Some(key_id) {
+                host.key_id = None;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Create a port-forwarding rule (minting an id when empty).
+    pub fn add_port_forwarding(
+        &mut self,
+        mut forward: PortForwardingConfig,
+        cx: &mut Context<Self>,
+    ) {
+        if forward.id.is_empty() {
+            forward.id = fresh_id("forward");
+        }
+        self.persist("forward", |store| store.port_forwards().create(&forward).map(|_| ()));
+        self.port_forwardings.push(forward);
+        cx.notify();
+    }
+
+    /// Delete a port-forwarding rule.
+    pub fn delete_port_forwarding(&mut self, forward_id: &str, cx: &mut Context<Self>) {
+        self.persist("forward", |store| {
+            store.port_forwards().delete(forward_id).map(|_| ())
+        });
+        self.port_forwardings
+            .retain(|forward| forward.id != forward_id);
+        cx.notify();
+    }
+
     // ----- internals ------------------------------------------------------
 
     fn session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
@@ -826,6 +1188,8 @@ fn params_for(host: &Host, library: &Library) -> ConnectionParams {
 struct LoadedLibrary {
     store: Arc<Store>,
     library: Library,
+    port_forwardings: Vec<PortForwardingConfig>,
+    known_hosts: Vec<KnownHost>,
 }
 
 fn load_library() -> Result<LoadedLibrary> {
@@ -838,7 +1202,14 @@ fn load_library() -> Result<LoadedLibrary> {
         keys: store.keys().list()?,
         keychains: store.keychains().list()?,
     };
-    Ok(LoadedLibrary { store: Arc::new(store), library })
+    let port_forwardings = store.port_forwards().list()?;
+    let known_hosts = store.known_hosts().list()?;
+    Ok(LoadedLibrary {
+        store: Arc::new(store),
+        library,
+        port_forwardings,
+        known_hosts,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1095,5 +1466,70 @@ mod tests {
         assert!(SessionStatus::Failed { message: "auth".into() }
             .describe()
             .contains("auth"));
+    }
+
+    #[test]
+    fn dialogs_open_replace_and_close() {
+        let mut active: Option<Dialog> = None;
+        // Open: the empty host gains the dialog.
+        active = dialog_after(active, DialogIntent::Open(Dialog::AddHost));
+        assert_eq!(active, Some(Dialog::AddHost));
+        // Opening again REPLACES — dialogs never stack.
+        active = dialog_after(active, DialogIntent::Open(Dialog::EditHost("h1".into())));
+        assert_eq!(active, Some(Dialog::EditHost("h1".into())));
+        // Close clears…
+        active = dialog_after(active, DialogIntent::Close);
+        assert_eq!(active, None);
+        // …and closing an already-closed host is a no-op.
+        active = dialog_after(active, DialogIntent::Close);
+        assert_eq!(active, None);
+    }
+
+    #[test]
+    fn dialog_metadata_maps_to_sections() {
+        assert_eq!(Dialog::AddHost.title(), "Add Host");
+        assert_eq!(Dialog::AddSnippet.title(), "Add Snippet");
+        assert_eq!(Dialog::AddKey.title(), "Add Key");
+        assert_eq!(Dialog::AddPortForward.title(), "Add Port Forward");
+        assert_eq!(Dialog::EditHost("h".into()).title(), "Edit Host");
+        assert_eq!(Dialog::EditSnippet("s".into()).section(), Some(Section::Snippets));
+
+        assert_eq!(Dialog::AddHost.section(), Some(Section::Hosts));
+        assert_eq!(Dialog::AddPortForward.section(), Some(Section::PortForwarding));
+
+        let confirm = Dialog::Confirm {
+            title: "Delete host?".to_owned(),
+            message: "web-1 will be removed.".to_owned(),
+        };
+        assert_eq!(confirm.title(), "Delete host?");
+        assert_eq!(confirm.message(), Some("web-1 will be removed."));
+        // Confirmations belong to no single section.
+        assert_eq!(confirm.section(), None);
+        assert_eq!(Dialog::AddKey.message(), None);
+    }
+
+    #[test]
+    fn settings_and_account_defaults() {
+        let settings = SettingsState::default();
+        assert_eq!(settings.theme_mode, ThemeMode::Dark);
+        assert_eq!(settings.font_family, "Menlo");
+        assert!(settings.font_size > 0);
+        assert!(settings.scrollback_lines > 0);
+        assert!(settings.cursor_blink);
+        assert!(settings.auto_reconnect);
+
+        let account = AccountInfo::default();
+        assert_eq!(account.plan, "Free");
+        assert_eq!(account.device_count, 0);
+        assert!(account.email.is_empty());
+    }
+
+    #[test]
+    fn fresh_ids_are_prefixed_and_unique() {
+        let first = fresh_id("host");
+        let second = fresh_id("host");
+        assert!(first.starts_with("host-"));
+        assert!(second.starts_with("host-"));
+        assert_ne!(first, second);
     }
 }

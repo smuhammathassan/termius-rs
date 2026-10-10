@@ -3,13 +3,20 @@
 //! Layout (see [`app_shell::AppShell`]):
 //!
 //! ```text
-//! AppShell  (root: keybindings, status bar, owns TermiusState)
-//! ├── HostList      — group tree + host rows (sidebar)
+//! AppShell  (root: keybindings, status bar, owns TermiusState, dialog overlay)
+//! ├── sidebar column
+//! │   ├── section nav      — navigation::sidebar_items() (hosts/snippets/…)
+//! │   └── Hosts arm        — group tree + host rows (other arms: stubs)
 //! └── main column
 //!     ├── TabBar    — open sessions
-//!     ├── row: TerminalPane  +  SftpPanel (toggleable)
+//!     ├── row: TerminalPane  +  SftpPanel (toggleable; forced under SFTP)
 //!     └── status bar
 //! ```
+//!
+//! The center routes on `TermiusState::current_section`; `Hosts` and `Sftp`
+//! host real panels today, every other section shows an `EmptyState` stub
+//! until its screen wave lands. An active `TermiusState::active_dialog`
+//! paints a scrim + `DialogFrame` above everything.
 
 pub mod app_shell;
 pub mod host_list;
