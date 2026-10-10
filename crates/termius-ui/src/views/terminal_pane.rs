@@ -20,8 +20,9 @@ use gpui::{
 };
 use termius_terminal::{GridSnapshot, Key as TermKey, TerminalSize, CELL_HEIGHT_PX, CELL_WIDTH_PX};
 
-use crate::app_state::TermiusState;
-use crate::theme::{theme_of, TermiusTheme};
+use crate::app_state::{Dialog, TermiusState};
+use crate::primitives::Button;
+use crate::theme::{text, theme_of, TermiusTheme};
 use crate::views::app_shell::{SIDEBAR_WIDTH, SFTP_WIDTH, STATUS_BAR_HEIGHT, TAB_BAR_HEIGHT};
 
 /// Inner padding of the terminal viewport (both axes).
@@ -285,6 +286,49 @@ impl TerminalPane {
         let rows = (avail_h / CELL_HEIGHT_PX).floor().max(2.0) as u16;
         (cols, rows)
     }
+
+    /// The centred placeholder shown while no session is open.
+    ///
+    /// Mirrors the original's empty screen (`A3`/`UCe` in `_main.js`): a large
+    /// glyph, a bold title over a dim `R12S` note, and one accent action. The
+    /// wording is the terminal-area counterpart of the hosts empty state
+    /// ("Save your connection details as hosts to connect in one click."); the
+    /// action opens the Add-Host dialog through `TermiusState::open_dialog`.
+    fn empty_state(&self, theme: TermiusTheme, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .bg(theme.term_background)
+            .text_color(theme.title)
+            .child(
+                crate::icon("terminalTabIcon.svg")
+                    .w(px(48.))
+                    .h(px(48.))
+                    .text_color(theme.muted),
+            )
+            .child(text::B16P.style(div()).child(SharedString::from("No active connection")))
+            .child(
+                text::R12S.style(div()).text_color(theme.muted).child(SharedString::from(
+                    "Select a host on the left, or create one to start a session.",
+                )),
+            )
+            .child(div().mt(px(4.)).child(
+                Button::new("New Host").primary().on_click(
+                    theme,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.state.update(cx, |state, cx| {
+                            state.open_dialog(Dialog::AddHost, cx);
+                        });
+                    }),
+                ),
+            ))
+    }
 }
 
 impl Render for TerminalPane {
@@ -301,19 +345,13 @@ impl Render for TerminalPane {
 
         // Everything below borrows the state; listeners and the deferred
         // resize are attached afterwards so the borrow ends first.
-        let body: AnyElement = {
+        let has_session = self.state.read(cx).active_session.is_some();
+        let body: AnyElement = if has_session {
             let state = self.state.read(cx);
             match state.active_session() {
-                None => div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(theme.muted)
-                    .child(SharedString::from(
-                        "Select a host on the left and press ⏎ to connect",
-                    ))
-                    .into_any_element(),
+                // Unreachable while `has_session` is true; kept total so a
+                // mid-render close cannot panic.
+                None => div().into_any_element(),
                 Some(session) => {
                     if !session.status.is_live() {
                         badge = Some(session.status.describe());
@@ -376,6 +414,9 @@ impl Render for TerminalPane {
                     grid.into_any_element()
                 }
             }
+        } else {
+            // No open session: the original's centred empty state.
+            self.empty_state(theme, cx).into_any_element()
         };
 
         let mut root = div()

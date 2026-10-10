@@ -1,5 +1,5 @@
-//! app_shell — the root view: section sidebar + tab bar + routed content +
-//! status bar + dialog overlay.
+//! app_shell — the root view: top bar + list panel + routed content + dialog
+//! overlay.
 //!
 //! Owns the single [`TermiusState`] entity, installs the app keybindings and
 //! theme global ([`init`]), and opens the main window ([`open_window`]).
@@ -8,30 +8,33 @@
 //!
 //! ```text
 //! AppShell
-//! ├── sidebar (⌘B)
-//! │   ├── section nav        — [`Section::ALL`], highlights `current_section`
-//! │   └── contextual list    — Hosts → HostList; others → EmptyState stub
-//! └── center
-//!     ├── TabBar             — open sessions (always)
-//!     ├── routed content     — Hosts → TerminalPane (+ SftpPanel ⌘⇧F)
-//!     │                        Sftp  → TerminalPane + SftpPanel
-//!     │                        Snippets/Keys/PortForwarding/Keychain/Team/
-//!     │                        Settings/Account → the screen entity each
-//!     │                        factory mints once in [`AppShell::new`]
-//!     │                        Logs → EmptyState stub
-//!     └── status bar
+//! ├── top bar (full width, h≈44)
+//! │   ├── traffic-light spacer
+//! │   ├── page tabs        — [`sidebar_items`], highlights `current_section`
+//! │   ├── session tabs     — [`TabBar`] (open sessions + trailing "＋")
+//! │   └── right cluster    — Update pill · bell · gear · theme
+//! └── body row
+//!     ├── list panel (w≈260, ⌘B) — the section's contextual list
+//!     │                           Hosts → HostList; others → EmptyState stub
+//!     └── main area (flex-1)     — routed content:
+//!         │                        Hosts → TerminalPane (+ SftpPanel ⌘⇧F)
+//!         │                        Sftp  → TerminalPane + SftpPanel
+//!         │                        Snippets/Keys/PortForwarding/Keychain/Team/
+//!         │                        Settings/Account → the screen entity each
+//!         │                        factory mints once in [`AppShell::new`]
+//!         │                        Logs → EmptyState stub
 //! └── dialog overlay         — scrim + [`DialogFrame`] when a dialog is open,
 //!                              the card filled in by the owning screen's
 //!                              `*_dialog_body`
 //! ```
 //!
-//! The section nav, the contextual list and the routed center all switch on
+//! The page tabs, the contextual list and the routed main area all switch on
 //! [`TermiusState::current_section`], and each screen owns its slice of
 //! [`TermiusState`].
 
 use gpui::{
     actions, div, px, AnyElement, App, AppContext as _, BorrowAppContext, Context, Div, Entity,
-    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
+    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
     WindowHandle, WindowOptions,
 };
@@ -39,7 +42,7 @@ use gpui::{
 use crate::app_state::{Dialog, TermiusState};
 use crate::navigation::{sidebar_items, Section};
 use crate::primitives::{Button, DialogFrame, EmptyState, SettingsText};
-use crate::theme::{theme_of, with_alpha, TermiusTheme, ThemeMode};
+use crate::theme::{theme_of, with_alpha, TermiusTheme};
 use crate::views::account_screen::{account_screen, AccountScreen};
 use crate::views::host_dialog::host_dialog_body;
 use crate::views::keychain_screen::{keychain_screen, KeychainScreen};
@@ -50,23 +53,28 @@ use crate::views::port_forwarding_screen::{
 use crate::views::settings_screen::{settings_screen, SettingsScreen};
 use crate::views::snippets_screen::{snippet_dialog_body, snippets_screen, SnippetsScreen};
 use crate::views::team_screen::{team_screen, TeamScreen};
+use crate::views::top_bar::{self, TRAFFIC_LIGHT_WIDTH};
 use crate::views::{HostList, SftpPanel, TabBar, TerminalPane};
 
 // Global actions bound app-wide (no key context: they fire from anywhere).
 actions!(termius, [ToggleSidebar, ToggleSftp, CloseActiveTab]);
 
-/// Sidebar width; the terminal pane subtracts it from the window width.
+/// List-panel width (the left column under the top bar); the terminal pane
+/// subtracts it from the window width.
 pub const SIDEBAR_WIDTH: f32 = 260.0;
 /// SFTP panel width (same contract).
 pub const SFTP_WIDTH: f32 = 300.0;
 /// Tab strip height.
+///
+/// Kept for the terminal pane's chrome maths; the session tabs now live inside
+/// the [`top_bar`] strip (its own [`top_bar::TOP_BAR_HEIGHT`]).
 pub const TAB_BAR_HEIGHT: f32 = 40.0;
 /// Status bar height.
+///
+/// The old fake status bar is gone; this constant survives only because
+/// [`crate::views::terminal_pane`] still folds it into its content-height
+/// calculation.
 pub const STATUS_BAR_HEIGHT: f32 = 26.0;
-/// Sidebar section-nav row height.
-const NAV_ROW_HEIGHT: f32 = 28.0;
-/// Sidebar app-header height.
-const SIDEBAR_HEADER_HEIGHT: f32 = 36.0;
 
 /// A sized flex slot around one routed section screen.
 ///
@@ -215,65 +223,114 @@ impl AppShell {
         });
     }
 
-    // ----- sidebar --------------------------------------------------------
+    // ----- top bar --------------------------------------------------------
 
-    /// The left column: section nav + the section's contextual list.
-    fn sidebar(
+    /// The full-width title strip: traffic-light spacer, page tabs, session
+    /// tabs (via [`TabBar`]) and the right-hand cluster.
+    fn top_bar(
         &mut self,
         theme: TermiusTheme,
         current: Section,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut column = div()
+        let mut bar = div()
             .flex()
-            .flex_col()
-            .size_full()
-            .overflow_hidden()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .h(px(top_bar::TOP_BAR_HEIGHT))
+            .flex_none()
             .bg(theme.sidebar_background)
-            .text_color(theme.foreground)
-            .border_r_1()
+            .text_color(theme.title)
+            .border_b_1()
             .border_color(theme.border);
 
-        // App header.
-        column = column.child(
+        // Spacer for the macOS traffic lights.
+        bar = bar.child(
             div()
-                .flex()
-                .items_center()
-                .h(px(SIDEBAR_HEADER_HEIGHT))
-                .px(px(12.))
-                .border_b_1()
-                .border_color(theme.border)
-                .child(SharedString::from("Termius")),
+                .flex_none()
+                .w(px(TRAFFIC_LIGHT_WIDTH))
+                .h(px(top_bar::TOP_BAR_HEIGHT)),
         );
 
-        // Section nav (order from `navigation::sidebar_items`).
+        // Page tabs (order from `navigation::sidebar_items`, the router order).
+        let mut page_tabs = div().flex().flex_row().items_center().gap(px(2.)).flex_none();
         for section in sidebar_items() {
-            let icon = section.icon();
-            let label = section.label();
-            let active = *section == current;
-            let mut row = div()
-                .id(SharedString::from(format!("nav-{label}")))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .h(px(NAV_ROW_HEIGHT))
-                .px(px(12.))
-                .rounded(px(4.))
-                .text_color(if active { theme.foreground } else { theme.muted });
-            if active {
-                row = row.bg(theme.tab_active);
-            }
-            row = row.child(SharedString::from(icon)).child(SharedString::from(label));
             let target = *section;
-            column = column.child(
-                row.on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.set_section(target, cx);
-                })),
+            let active = target == current;
+            page_tabs = page_tabs.child(
+                top_bar::page_tab(theme, target, active).on_click(cx.listener(
+                    move |this, _event, _window, cx| this.set_section(target, cx),
+                )),
             );
         }
+        bar = bar.child(page_tabs);
 
-        // Contextual list below the nav: the host tree today, stubs elsewhere
-        // (later waves swap each arm for its own panel).
+        // Divider between the page tabs and the connection tabs.
+        bar = bar.child(
+            div()
+                .flex_none()
+                .w(px(1.))
+                .h(px(20.))
+                .mx(px(6.))
+                .bg(theme.border),
+        );
+
+        // Connection/session tabs (title · status dot · close ×) + trailing ＋.
+        bar = bar.child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .child(self.tab_bar.clone()),
+        );
+
+        // Right cluster, pinned to the far edge.
+        bar = bar.child(self.top_bar_right(theme, current, cx));
+        bar.into_any_element()
+    }
+
+    /// The top-bar right cluster: the "Update" pill, notification bell,
+    /// settings gear (routes to Settings) and a theme toggle.
+    fn top_bar_right(
+        &mut self,
+        theme: TermiusTheme,
+        current: Section,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut cluster = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.))
+            .flex_none()
+            .pr(px(10.));
+
+        cluster = cluster.child(top_bar::update_pill(theme));
+        // Notification bell (no panel yet — styled affordance only).
+        cluster = cluster.child(top_bar::icon_button(theme, "topbar-bell", "bell.svg", false));
+        cluster = cluster.child(
+            top_bar::icon_button(theme, "topbar-gear", "gear.svg", current == Section::Settings)
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.set_section(Section::Settings, cx)
+                })),
+        );
+        cluster = cluster.child(
+            top_bar::icon_button(theme, "topbar-theme", "themePaint.svg", false).on_click(
+                cx.listener(|this, _event, _window, cx| this.toggle_theme(cx)),
+            ),
+        );
+        cluster.into_any_element()
+    }
+
+    // ----- list panel -----------------------------------------------------
+
+    /// The left list panel: the section's contextual list (the host tree today,
+    /// [`EmptyState`] stubs elsewhere — later waves swap each arm for its own
+    /// panel).
+    fn contextual_list(&self, theme: TermiusTheme, current: Section) -> AnyElement {
         let contextual: AnyElement = match current {
             Section::Hosts => self.host_list.clone().into_any_element(),
             other => EmptyState::new(
@@ -283,16 +340,16 @@ impl AppShell {
             .element(theme)
             .into_any_element(),
         };
-        column = column.child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(0.))
-                .overflow_hidden()
-                .child(contextual),
-        );
-        column.into_any_element()
+
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .overflow_hidden()
+            .bg(theme.sidebar_background)
+            .text_color(theme.foreground)
+            .child(contextual)
+            .into_any_element()
     }
 
     // ----- dialog overlay -------------------------------------------------
@@ -418,81 +475,26 @@ impl AppShell {
 impl Render for AppShell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme_of(cx);
-        let (sidebar, sftp, status, sessions, section, dialog) = {
+        let (list_visible, sftp, section, dialog) = {
             let state = self.state.read(cx);
             (
                 state.sidebar_visible,
                 state.sftp_visible,
-                state.status_text.clone(),
-                state.sessions.len(),
                 state.current_section,
                 state.active_dialog.clone(),
             )
         };
 
-        // Status bar (built before the body: it registers click listeners).
-        let mut status_bar = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .h(px(STATUS_BAR_HEIGHT))
-            .px(px(10.))
-            .bg(theme.status_background)
-            .border_t_1()
-            .border_color(theme.border)
-            .text_color(theme.muted);
-        status_bar = status_bar.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .child(SharedString::from(section.label()))
-                .child(SharedString::from(status))
-                .child(SharedString::from(format!("{sessions} open"))),
-        );
+        // Full-width top bar (page tabs + session tabs + right cluster).
+        let top_bar = self.top_bar(theme, section, cx);
 
-        let sidebar_btn = div()
-            .id("status-toggle-sidebar")
-            .px(px(6.))
-            .rounded(px(3.))
-            .text_color(theme.foreground)
-            .child(SharedString::from("Hosts ⌘B"))
-            .on_click(cx.listener(|this, _event, _window, cx| this.toggle_sidebar(cx)));
-        let sftp_btn = div()
-            .id("status-toggle-sftp")
-            .px(px(6.))
-            .rounded(px(3.))
-            .text_color(theme.foreground)
-            .child(SharedString::from("Files ⌘⇧F"))
-            .on_click(cx.listener(|this, _event, _window, cx| this.toggle_sftp(cx)));
-        let theme_label = if theme.mode == ThemeMode::Dark { "☾ dark" } else { "☀ light" };
-        let theme_btn = div()
-            .id("status-toggle-theme")
-            .px(px(6.))
-            .rounded(px(3.))
-            .text_color(theme.foreground)
-            .child(SharedString::from(theme_label))
-            .on_click(cx.listener(|this, _event, _window, cx| this.toggle_theme(cx)));
-        status_bar = status_bar.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap(px(4.))
-                .child(sidebar_btn)
-                .child(sftp_btn)
-                .child(theme_btn),
-        );
-
-        // Center column: tabs → routed content → status bar.
-        let mut center = div().flex().flex_col().flex_1().min_h(px(0.));
-        center = center.child(self.tab_bar.clone());
-
-        let mut middle = div().flex().flex_row().flex_1().min_h(px(0.));
+        // Main area: the section's routed content (terminal/sftp or a screen).
+        let mut main = div().flex().flex_row().flex_1().min_w(px(0.)).min_h(px(0.));
         match section {
             Section::Hosts => {
-                middle = middle.child(self.terminal.clone());
+                main = main.child(self.terminal.clone());
                 if sftp {
-                    middle = middle.child(
+                    main = main.child(
                         div().w(px(SFTP_WIDTH)).min_w(px(SFTP_WIDTH)).child(self.sftp.clone()),
                     );
                 }
@@ -500,22 +502,22 @@ impl Render for AppShell {
             Section::Sftp => {
                 // The SFTP screen is the browser beside the live terminal
                 // (`TermiusState::set_section` opens the panel on entry).
-                middle = middle.child(self.terminal.clone());
-                middle = middle.child(
+                main = main.child(self.terminal.clone());
+                main = main.child(
                     div().w(px(SFTP_WIDTH)).min_w(px(SFTP_WIDTH)).child(self.sftp.clone()),
                 );
             }
-            Section::Snippets => middle = middle.child(screen_slot(self.snippets.clone())),
-            Section::Keys => middle = middle.child(screen_slot(self.keys.clone())),
+            Section::Snippets => main = main.child(screen_slot(self.snippets.clone())),
+            Section::Keys => main = main.child(screen_slot(self.keys.clone())),
             Section::PortForwarding => {
-                middle = middle.child(screen_slot(self.port_forwarding.clone()))
+                main = main.child(screen_slot(self.port_forwarding.clone()))
             }
-            Section::Keychain => middle = middle.child(screen_slot(self.keychain.clone())),
-            Section::Team => middle = middle.child(screen_slot(self.team.clone())),
-            Section::Settings => middle = middle.child(screen_slot(self.settings.clone())),
-            Section::Account => middle = middle.child(screen_slot(self.account.clone())),
+            Section::Keychain => main = main.child(screen_slot(self.keychain.clone())),
+            Section::Team => main = main.child(screen_slot(self.team.clone())),
+            Section::Settings => main = main.child(screen_slot(self.settings.clone())),
+            Section::Account => main = main.child(screen_slot(self.account.clone())),
             other => {
-                middle = middle.child(
+                main = main.child(
                     EmptyState::new(
                         format!("{} — coming soon", other.label()),
                         "This screen is filled in by its section wave.",
@@ -524,20 +526,21 @@ impl Render for AppShell {
                 );
             }
         }
-        center = center.child(middle);
-        center = center.child(status_bar);
 
-        // Body: section sidebar + center.
+        // Body: the left list panel + the main area.
         let mut body = div().flex().flex_row().flex_1().min_h(px(0.));
-        if sidebar {
+        if list_visible {
             body = body.child(
                 div()
                     .w(px(SIDEBAR_WIDTH))
                     .min_w(px(SIDEBAR_WIDTH))
-                    .child(self.sidebar(theme, section, cx)),
+                    .flex_none()
+                    .border_r_1()
+                    .border_color(theme.border)
+                    .child(self.contextual_list(theme, section)),
             );
         }
-        body = body.child(center);
+        body = body.child(main);
 
         let mut root = div().id("app-shell")
             .size_full()
@@ -548,6 +551,7 @@ impl Render for AppShell {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_sftp))
             .on_action(cx.listener(Self::on_close_active_tab))
+            .child(top_bar)
             .child(body);
 
         // Dialog overlay paints last, above everything.

@@ -51,7 +51,7 @@ use gpui::{
     Styled as _, Window,
 };
 
-use crate::theme::{over, with_alpha, TermiusTheme, ThemeMode};
+use crate::theme::{over, with_alpha, TermiusTheme, ThemeMode, UI_FONT};
 
 /// Default button height — Termius' `large` button (`height: 36px`).
 const BUTTON_HEIGHT: f32 = 36.0;
@@ -123,14 +123,14 @@ impl EmptyState {
             .text_color(theme.title)
             .child(
                 div()
-                    .text_size(px(14.))
+                    .font_family(UI_FONT).text_size(px(14.))
                     .font_weight(FontWeight::BOLD)
                     .line_height(px(line_height_of(14.)))
                     .child(self.title),
             )
             .child(
                 div()
-                    .text_size(px(12.))
+                    .font_family(UI_FONT).text_size(px(12.))
                     .font_weight(body_weight())
                     .line_height(px(line_height_of(12.)))
                     .text_color(theme.text_common)
@@ -239,7 +239,7 @@ impl Button {
             .rounded(px(theme.corner_radius_medium))
             .bg(background)
             .text_color(foreground)
-            .text_size(px(14.))
+            .font_family(UI_FONT).text_size(px(14.))
             .font_weight(FontWeight::MEDIUM)
             .line_height(px(line_height_of(14.)))
             .whitespace_nowrap()
@@ -342,7 +342,7 @@ impl InputField {
         let mut field = div().flex().flex_col().gap(px(6.));
         field = field.child(
             div()
-                .text_size(px(14.))
+                .font_family(UI_FONT).text_size(px(14.))
                 .font_weight(FontWeight::NORMAL)
                 .line_height(px(line_height_of(14.)))
                 .text_color(theme.text_common)
@@ -358,7 +358,7 @@ impl InputField {
             .border_1()
             .border_color(theme.border_basic)
             .bg(theme.card_c)
-            .text_size(px(14.))
+            .font_family(UI_FONT).text_size(px(14.))
             .font_weight(body_weight())
             .line_height(px(line_height_of(14.)))
             .text_color(text_color);
@@ -444,7 +444,7 @@ impl Switch {
         line = line.child(
             div()
                 .min_w(px(0.))
-                .text_size(px(12.))
+                .font_family(UI_FONT).text_size(px(12.))
                 .line_height(px(line_height_of(12.)))
                 .text_color(theme.primary)
                 .truncate()
@@ -464,7 +464,7 @@ impl Switch {
         if !self.description.is_empty() {
             row = row.child(
                 div()
-                    .text_size(px(12.))
+                    .font_family(UI_FONT).text_size(px(12.))
                     .font_weight(body_weight())
                     .line_height(px(line_height_of(12.)))
                     .text_color(theme.text_common)
@@ -574,7 +574,7 @@ impl ListItem {
 
         row = row.child(
             div()
-                .text_size(px(14.))
+                .font_family(UI_FONT).text_size(px(14.))
                 .font_weight(body_weight())
                 .line_height(px(line_height_of(14.)))
                 .child(self.label),
@@ -582,7 +582,7 @@ impl ListItem {
         if !self.subtitle.is_empty() {
             row = row.child(
                 div()
-                    .text_size(px(12.))
+                    .font_family(UI_FONT).text_size(px(12.))
                     .font_weight(body_weight())
                     .line_height(px(line_height_of(12.)))
                     .text_color(theme.text_common)
@@ -626,7 +626,7 @@ impl SectionHeader {
             .items_center()
             .h(px(SECTION_HEADER_HEIGHT))
             .px(px(12.))
-            .text_size(px(12.))
+            .font_family(UI_FONT).text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
             .line_height(px(line_height_of(12.)))
             .whitespace_nowrap()
@@ -651,7 +651,7 @@ impl SettingsTitle {
     /// `fontWeight: 700`, `lineHeight: 1.5`, `color: --text-primary`).
     pub fn element(self, theme: TermiusTheme) -> Div {
         div()
-            .text_size(px(14.))
+            .font_family(UI_FONT).text_size(px(14.))
             .font_weight(FontWeight::BOLD)
             .line_height(px(line_height_of(14.)))
             .text_color(theme.title)
@@ -676,7 +676,7 @@ impl SettingsText {
     pub fn element(self, theme: TermiusTheme) -> Div {
         div()
             .mt(px(15.))
-            .text_size(px(12.))
+            .font_family(UI_FONT).text_size(px(12.))
             .font_weight(body_weight())
             .line_height(px(line_height_of(12.)))
             .whitespace_normal()
@@ -744,7 +744,7 @@ impl SettingsSection {
             .text_color(theme.title);
         section = section.child(
             div()
-                .text_size(px(14.))
+                .font_family(UI_FONT).text_size(px(14.))
                 .font_weight(FontWeight::BOLD)
                 .line_height(px(line_height_of(14.)))
                 .mb(px(10.))
@@ -846,7 +846,7 @@ impl DialogFrame {
                 .px(px(40.))
                 .pt(px(40.))
                 .pb(px(10.))
-                .text_size(px(14.))
+                .font_family(UI_FONT).text_size(px(14.))
                 .font_weight(FontWeight::BOLD)
                 .line_height(px(line_height_of(14.)))
                 .child(self.title),

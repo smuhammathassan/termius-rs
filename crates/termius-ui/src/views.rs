@@ -3,14 +3,18 @@
 //! Layout (see [`app_shell::AppShell`]):
 //!
 //! ```text
-//! AppShell  (root: keybindings, status bar, owns TermiusState, dialog overlay)
-//! ├── sidebar column
-//! │   ├── section nav      — navigation::sidebar_items() (hosts/snippets/…)
-//! │   └── Hosts arm        — group tree + host rows (other arms: stubs)
-//! └── main column
-//!     ├── TabBar    — open sessions
-//!     ├── row: TerminalPane  +  SftpPanel (toggleable; forced under SFTP)
-//!     └── status bar
+//! AppShell  (root: keybindings, owns TermiusState, dialog overlay)
+//! ├── top bar (full width, h≈44)
+//! │   ├── traffic-light spacer
+//! │   ├── page tabs   — navigation::sidebar_items() (hosts/snippets/…)
+//! │   ├── session tabs — TabBar (open sessions + trailing "＋")
+//! │   └── right cluster — Update pill · bell · gear · theme
+//! └── body row
+//!     ├── list panel (w≈260) — the section's contextual list
+//!     │                        Hosts → HostList; others → EmptyState stub
+//!     └── main area (flex-1)
+//!         └── row: TerminalPane + SftpPanel (toggleable; forced under SFTP),
+//!                  or the routed section screen
 //! ```
 //!
 //! The center routes on `TermiusState::current_section`: `Hosts` and `Sftp`
@@ -34,6 +38,7 @@ pub mod sftp_panel;
 pub mod tab_bar;
 pub mod team_screen;
 pub mod terminal_pane;
+pub mod top_bar;
 
 pub use account_screen::{account_screen, AccountScreen};
 pub use app_shell::{init, launch, open_window, AppShell};
@@ -50,3 +55,4 @@ pub use sftp_panel::SftpPanel;
 pub use tab_bar::TabBar;
 pub use team_screen::{team_screen, TeamScreen};
 pub use terminal_pane::{row_runs, TerminalPane, TextRun};
+pub use top_bar::TOP_BAR_HEIGHT;

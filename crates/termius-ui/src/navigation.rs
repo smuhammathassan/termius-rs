@@ -1,10 +1,12 @@
-//! navigation — the sidebar section model (the Electron renderer's left nav).
+//! navigation — the section model behind the top-bar page tabs (the Electron
+//! renderer's main navigation).
 //!
 //! [`Section`] is the routing enum [`TermiusState`](crate::app_state::TermiusState)
 //! stores as `current_section` and the shell switches on. Every variant owns a
-//! display [`label`](Section::label) and an [`icon`](Section::icon), and the
-//! full sidebar order lives in [`Section::ALL`] (returned by
-//! [`sidebar_items`]) so the nav cannot drift out of sync with the router.
+//! display [`label`](Section::label) and an [`icon`](Section::icon) (a real
+//! bundled SVG file name resolved through [`crate::assets::icon`]), and the
+//! full order lives in [`Section::ALL`] (returned by [`sidebar_items`]) so the
+//! nav cannot drift out of sync with the router.
 //!
 //! The settings screen additionally has sub-tabs
 //! ([`SETTINGS_TABS`]) — the Settings section renders them as a header row.
@@ -59,23 +61,25 @@ impl Section {
         }
     }
 
-    /// A single-glyph icon rendered before the label.
+    /// The bundled SVG icon file name rendered before the label.
     ///
-    /// PORT-TODO: swap for the Termius SVG assets once gpui's image/svg
-    /// pipeline is wired (`cx.load_asset`); emoji keeps the nav readable with
-    /// zero font dependencies.
+    /// The name is a bare file name from `crates/termius-ui/assets/icons`
+    /// (e.g. `"host.svg"`); pass it straight to [`crate::assets::icon`]. Each
+    /// section maps to the closest glyph the original Termius icon set shipped
+    /// for that screen (host rack, snippet sheet, key, port-forward rule,
+    /// SFTP folder, keychain, team, session log, gear, person).
     pub const fn icon(&self) -> &'static str {
         match self {
-            Self::Hosts => "🖥",
-            Self::Snippets => "📝",
-            Self::Keys => "🔑",
-            Self::PortForwarding => "🔗",
-            Self::Sftp => "📁",
-            Self::Keychain => "🗝",
-            Self::Team => "👥",
-            Self::Logs => "📋",
-            Self::Settings => "⚙",
-            Self::Account => "👤",
+            Self::Hosts => "host.svg",
+            Self::Snippets => "snippet.svg",
+            Self::Keys => "key.svg",
+            Self::PortForwarding => "PortForwarding.svg",
+            Self::Sftp => "sftp.svg",
+            Self::Keychain => "keys.svg",
+            Self::Team => "team.svg",
+            Self::Logs => "session-log.svg",
+            Self::Settings => "gear.svg",
+            Self::Account => "person.svg",
         }
     }
 
@@ -164,8 +168,31 @@ mod tests {
             assert_eq!(item.section, *section);
             assert_eq!(item.label, section.label());
             assert_eq!(item.icon, section.icon());
-            assert!(!item.icon.is_empty());
+            // Real bundled SVG assets, never emoji/unicode glyphs.
+            assert!(item.icon.ends_with(".svg"), "`{}` is not an SVG name", item.icon);
             assert_eq!(SidebarItem::of(*section), item);
+        }
+    }
+
+    #[test]
+    fn section_icons_are_bundled_assets() {
+        for section in Section::ALL {
+            assert!(
+                crate::assets::has_icon(section.icon()),
+                "missing icon asset `{}` for {:?}",
+                section.icon(),
+                section
+            );
+        }
+    }
+
+    #[test]
+    fn section_icons_are_unique_and_ascii() {
+        let mut seen = std::collections::HashSet::new();
+        for section in Section::ALL {
+            let icon = section.icon();
+            assert!(icon.is_ascii(), "icon `{icon}` is not ASCII");
+            assert!(seen.insert(icon), "duplicate section icon `{icon}`");
         }
     }
 

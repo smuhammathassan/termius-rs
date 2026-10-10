@@ -1,15 +1,23 @@
-//! tab_bar — the open-session tab strip.
+//! tab_bar — the open-session (connection) tabs.
 //!
-//! One tab per [`Session`](crate::app_state::Session): status dot, label, and
-//! a close affordance (also reachable with ⌘W via the shell's `CloseActiveTab`).
+//! One tab per [`Session`](crate::app_state::Session): a status dot, the label
+//! (OSC title when the remote set one, else the host label) and a close
+//! affordance, plus a trailing "＋" that opens the Add Host dialog. The strip
+//! is embedded in the shell's top bar (see [`super::top_bar`]); it carries no
+//! background of its own so it sits flush on the title strip.
+//!
+//! Closing is also reachable with ⌘W via the shell's `CloseActiveTab` action.
 
 use gpui::{
     div, px, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
 
-use crate::app_state::{SessionStatus, TermiusState};
-use crate::theme::{theme_of, TermiusTheme};
+use crate::app_state::{Dialog, SessionStatus, TermiusState};
+use crate::assets::icon;
+use crate::theme::{text, theme_of, TermiusTheme};
+
+use super::top_bar::{self, TOP_BAR_HEIGHT};
 
 /// The tab strip view.
 pub struct TabBar {
@@ -27,6 +35,11 @@ impl TabBar {
 
     fn close(&mut self, session_id: String, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| state.close_session(&session_id, cx));
+    }
+
+    /// The trailing "＋" affordance: open the New Host form.
+    fn new_host(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.open_dialog(Dialog::AddHost, cx));
     }
 }
 
@@ -57,24 +70,14 @@ impl Render for TabBar {
             .flex()
             .flex_row()
             .items_center()
-            .h(px(super::app_shell::TAB_BAR_HEIGHT))
-            .px(px(6.))
             .gap(px(4.))
-            .bg(theme.tab_background)
-            .border_b_1()
-            .border_color(theme.border);
-
-        if tabs.is_empty() {
-            strip = strip.child(
-                div()
-                    .px(px(8.))
-                    .text_color(theme.muted)
-                    .child(SharedString::from("No open sessions")),
-            );
-        }
+            .h(px(TOP_BAR_HEIGHT))
+            .min_w(px(0.))
+            .overflow_hidden();
 
         for (id, label, status) in tabs {
             let is_active = active.as_deref() == Some(id.as_str());
+            let fg = if is_active { theme.title } else { theme.muted };
             let dot = status_color(&status, &theme);
             let select_id = id.clone();
 
@@ -83,23 +86,35 @@ impl Render for TabBar {
                 .flex()
                 .items_center()
                 .gap(px(6.))
+                .h(px(28.))
                 .px(px(10.))
-                .py(px(4.))
-                .rounded(px(4.))
-                .text_color(if is_active { theme.foreground } else { theme.muted });
+                .rounded(px(theme.corner_radius_small))
+                .cursor_pointer()
+                .text_color(fg);
             if is_active {
                 tab = tab.bg(theme.tab_active);
             }
 
             tab = tab
                 .child(div().size(px(7.)).rounded(px(3.5)).bg(dot))
-                .child(SharedString::from(label))
+                .child(
+                    text::R12P
+                        .style(div())
+                        .text_color(fg)
+                        .whitespace_nowrap()
+                        .child(SharedString::from(label)),
+                )
                 .child(
                     div()
                         .id(SharedString::from(format!("tab-close-{id}")))
-                        .px(px(3.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(14.))
+                        .rounded(px(7.))
+                        .cursor_pointer()
                         .text_color(theme.muted)
-                        .child(SharedString::from("✕"))
+                        .child(icon("closeIcon.svg").w(px(10.)).h(px(10.)).text_color(theme.muted))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
                             this.close(id.clone(), cx);
@@ -111,6 +126,12 @@ impl Render for TabBar {
 
             strip = strip.child(tab);
         }
+
+        // Trailing "＋": open a new connection (the Add Host form).
+        strip = strip.child(
+            top_bar::icon_button(theme, "session-tab-new", "addCircle.svg", false)
+                .on_click(cx.listener(|this, _event, _window, cx| this.new_host(cx))),
+        );
 
         strip
     }
