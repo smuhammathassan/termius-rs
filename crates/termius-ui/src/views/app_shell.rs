@@ -107,9 +107,10 @@ fn screen_slot(screen: impl IntoElement) -> Div {
 /// hardcoding dark (see [`TermiusState`](crate::app_state::TermiusState)).
 pub fn init(cx: &mut App) {
     crate::assets::load_fonts(cx);
-    // Follow the OS appearance (Termius' "System" default); the top-strip theme
-    // toggle still switches it at runtime.
-    cx.set_global(TermiusTheme::system(cx));
+    // The reference app runs the LIGHT appearance (dark top strip + light body),
+    // so default to light to match; `TermiusTheme::system(cx)` follows the OS and
+    // the top-strip toggle switches at runtime.
+    cx.set_global(TermiusTheme::light());
     cx.bind_keys([
         KeyBinding::new("cmd-b", ToggleSidebar, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
