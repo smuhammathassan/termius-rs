@@ -33,10 +33,10 @@
 //! [`TermiusState`].
 
 use gpui::{
-    actions, div, px, AnyElement, App, AppContext as _, BorrowAppContext, Context, Div, Entity,
-    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
-    WindowHandle, WindowOptions,
+    actions, div, point, px, size, AnyElement, App, AppContext as _, Bounds, BorrowAppContext,
+    Context, Div, Entity, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _,
+    Render, StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
+    WindowBounds, WindowHandle, WindowOptions,
 };
 
 use crate::app_state::{Dialog, TermiusState};
@@ -105,10 +105,18 @@ pub fn init(cx: &mut App) {
 /// Open the main application window.
 pub fn open_window(cx: &mut App) -> anyhow::Result<WindowHandle<AppShell>> {
     let options = WindowOptions {
+        // The original Termius window is frameless: its own top bar carries the
+        // traffic lights, so hide the system titlebar and place them inside our
+        // strip (see `top_bar::TRAFFIC_LIGHT_WIDTH`).
         titlebar: Some(TitlebarOptions {
             title: Some("Termius".into()),
-            ..TitlebarOptions::default()
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(12.), px(14.))),
         }),
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(120.), px(90.)),
+            size: size(px(1280.), px(800.)),
+        })),
         ..WindowOptions::default()
     };
     Ok(cx.open_window(options, |_window, cx| cx.new(|cx| AppShell::new(cx)))?)
