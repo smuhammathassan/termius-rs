@@ -1,63 +1,67 @@
-//! navigation — the section model behind the top-bar page tabs (the Electron
-//! renderer's main navigation).
+//! navigation — the section model behind the shell's **left-panel** nav.
 //!
-//! [`Section`] is the routing enum [`TermiusState`](crate::app_state::TermiusState)
-//! stores as `current_section` and the shell switches on. Every variant owns a
-//! display [`label`](Section::label) and an [`icon`](Section::icon) (a real
-//! bundled SVG file name resolved through [`crate::assets::icon`]), and the
-//! full order lives in [`Section::ALL`] (returned by [`sidebar_items`]) so the
-//! nav cannot drift out of sync with the router.
+//! Reconstructed from `analysis/recon/00-shell.md`: the original's section
+//! navigation is a **vertical list inside the 185px left panel** (`leftPanelTabs
+//! = baseTabs minus SFTP`, `_main.js:112079`), *not* a horizontal top bar. The
+//! routable sections are, in order, Hosts, Keychain, Port Forwarding, Snippets,
+//! Known Hosts, Logs; this port drops the unimplemented Known Hosts row and keeps
+//! [`Section::ALL`] in that nav order.
 //!
-//! The settings screen additionally has sub-tabs
-//! ([`SETTINGS_TABS`]) — the Settings section renders them as a header row.
+//! Screens that are **not** left-panel rows keep their [`Section`] variants so
+//! every screen stays reachable:
+//!
+//! * [`Section::Sftp`] — a fixed top-strip shortcut tab (`RDe`'s SFTP tab);
+//! * [`Section::Keys`] — reached from the top-strip right cluster;
+//! * [`Section::Settings`] / [`Section::Account`] / [`Section::Team`] — the
+//!   top-strip right cluster (gear / person / team).
+//!
+//! Every variant owns a display [`label`](Section::label) and an
+//! [`icon`](Section::icon) (a real bundled SVG file name resolved through
+//! [`crate::assets::icon`]).
+//!
+//! The settings screen additionally has sub-tabs ([`SETTINGS_TABS`]).
 
-/// One screen the left sidebar can route to.
-///
-/// Mirrors the Termius Electron sidebar: Hosts, Snippets, Keys, Port
-/// Forwarding, SFTP, Keychain, Team, Logs, Settings, Account.
+/// One screen the shell can route to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
+    // --- left-panel rows (in `Section::ALL` order) ---
     Hosts,
-    Snippets,
-    Keys,
-    PortForwarding,
-    Sftp,
     Keychain,
-    Team,
+    PortForwarding,
+    Snippets,
     Logs,
+    // --- routable, but reached from the top strip, not the nav rail ---
+    Keys,
+    Sftp,
     Settings,
     Account,
+    Team,
 }
 
 impl Section {
-    /// Every section, in sidebar order. The single source of truth for the
-    /// nav (see [`sidebar_items`]) and for completeness tests.
+    /// The left-panel section rows, in nav order. The single source of truth for
+    /// the rail (see [`sidebar_items`]) and for completeness tests.
     pub const ALL: &'static [Section] = &[
         Section::Hosts,
-        Section::Snippets,
-        Section::Keys,
-        Section::PortForwarding,
-        Section::Sftp,
         Section::Keychain,
-        Section::Team,
+        Section::PortForwarding,
+        Section::Snippets,
         Section::Logs,
-        Section::Settings,
-        Section::Account,
     ];
 
-    /// The label Termius shows in the sidebar ("Port Forwarding", "SFTP"…).
+    /// The label Termius shows in the left-panel rail ("Port Forwarding"…).
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Hosts => "Hosts",
-            Self::Snippets => "Snippets",
-            Self::Keys => "Keys",
-            Self::PortForwarding => "Port Forwarding",
-            Self::Sftp => "SFTP",
             Self::Keychain => "Keychain",
-            Self::Team => "Team",
+            Self::PortForwarding => "Port Forwarding",
+            Self::Snippets => "Snippets",
             Self::Logs => "Logs",
+            Self::Keys => "Keys",
+            Self::Sftp => "SFTP",
             Self::Settings => "Settings",
             Self::Account => "Account",
+            Self::Team => "Team",
         }
     }
 
@@ -65,21 +69,21 @@ impl Section {
     ///
     /// The name is a bare file name from `crates/termius-ui/assets/icons`
     /// (e.g. `"host.svg"`); pass it straight to [`crate::assets::icon`]. Each
-    /// section maps to the closest glyph the original Termius icon set shipped
-    /// for that screen (host rack, snippet sheet, key, port-forward rule,
-    /// SFTP folder, keychain, team, session log, gear, person).
+    /// section maps to the glyph the original Termius icon set shipped for that
+    /// screen (host rack, keychain, port-forward rule, snippet sheet, session
+    /// log, key, SFTP folder, gear, person, team).
     pub const fn icon(&self) -> &'static str {
         match self {
             Self::Hosts => "host.svg",
-            Self::Snippets => "snippet.svg",
-            Self::Keys => "key.svg",
-            Self::PortForwarding => "PortForwarding.svg",
-            Self::Sftp => "Sftp.svg",
             Self::Keychain => "keys.svg",
-            Self::Team => "team.svg",
+            Self::PortForwarding => "PortForwarding.svg",
+            Self::Snippets => "snippet.svg",
             Self::Logs => "session-log.svg",
+            Self::Keys => "key.svg",
+            Self::Sftp => "Sftp.svg",
             Self::Settings => "gear.svg",
             Self::Account => "person.svg",
+            Self::Team => "team.svg",
         }
     }
 
@@ -93,7 +97,7 @@ impl Section {
 pub const SETTINGS_TABS: &[&str] =
     &["Terminal", "SFTP", "Logs", "Advanced", "Keyboard", "Team"];
 
-/// One row of the left sidebar nav.
+/// One row of the left-panel nav rail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SidebarItem {
     pub section: Section,
@@ -112,9 +116,9 @@ impl SidebarItem {
     }
 }
 
-/// The sidebar sections, in nav order.
+/// The left-panel sections, in nav order.
 ///
-/// Returns [`Section::ALL`] so views iterating the nav stay identical to the
+/// Returns [`Section::ALL`] so views iterating the rail stay identical to the
 /// router; use [`Section::sidebar_item`] when the label/icon is needed.
 pub fn sidebar_items() -> &'static [Section] {
     Section::ALL
@@ -130,22 +134,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_lists_every_section_in_sidebar_order() {
+    fn all_lists_the_left_panel_rows_in_nav_order() {
         let expected = [
             Section::Hosts,
-            Section::Snippets,
-            Section::Keys,
-            Section::PortForwarding,
-            Section::Sftp,
             Section::Keychain,
-            Section::Team,
+            Section::PortForwarding,
+            Section::Snippets,
             Section::Logs,
-            Section::Settings,
-            Section::Account,
         ];
         assert_eq!(Section::ALL.len(), expected.len());
         assert_eq!(Section::ALL, expected.as_slice());
-        // The nav renders exactly what the router switches on.
+        // The rail renders exactly what the router switches on.
         assert_eq!(sidebar_items(), Section::ALL);
     }
 
@@ -155,9 +154,10 @@ mod tests {
         for section in Section::ALL {
             let label = section.label();
             assert!(!label.is_empty());
-            assert!(seen.insert(label), "duplicate sidebar label `{label}`");
+            assert!(seen.insert(label), "duplicate nav label `{label}`");
         }
         assert_eq!(Section::PortForwarding.label(), "Port Forwarding");
+        assert_eq!(Section::Keychain.label(), "Keychain");
         assert_eq!(Section::Sftp.label(), "SFTP");
     }
 
@@ -193,6 +193,28 @@ mod tests {
             let icon = section.icon();
             assert!(icon.is_ascii(), "icon `{icon}` is not ASCII");
             assert!(seen.insert(icon), "duplicate section icon `{icon}`");
+        }
+    }
+
+    #[test]
+    fn off_nav_screens_stay_routable() {
+        // These are reached from the top strip, so they must not be in the rail
+        // but must keep a label + bundled icon.
+        for section in [
+            Section::Keys,
+            Section::Sftp,
+            Section::Settings,
+            Section::Account,
+            Section::Team,
+        ] {
+            assert!(!Section::ALL.contains(&section));
+            assert!(!section.label().is_empty());
+            assert!(
+                crate::assets::has_icon(section.icon()),
+                "missing icon asset `{}` for {:?}",
+                section.icon(),
+                section
+            );
         }
     }
 

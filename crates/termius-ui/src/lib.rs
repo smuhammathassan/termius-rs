@@ -55,8 +55,9 @@ pub use assets::{has_icon, icon, load_fonts, TermiusAssets, UI_FONT};
 pub use error::{Result, UiError};
 pub use navigation::{settings_tabs, sidebar_items, Section, SidebarItem, SETTINGS_TABS};
 pub use primitives::{
-    Button, ButtonVariant, DialogFrame, EmptyState, InputField, ListItem, SectionHeader,
-    SettingsSection, SettingsText, SettingsTitle, Switch,
+    Button, ButtonSize, ButtonVariant, DialogFrame, EmptyState, EntityRow, FiltersHeader, InputField,
+    ListItem, NavItem, SectionHeader, SettingsSection, SettingsText, SettingsTitle, ShapedIcon,
+    Switch, TabChip,
 };
 pub use theme::{text, theme_of, TermiusTheme, TextToken, ThemeMode};
 pub use views::{
