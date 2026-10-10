@@ -15,18 +15,22 @@
 //!     ├── TabBar             — open sessions (always)
 //!     ├── routed content     — Hosts → TerminalPane (+ SftpPanel ⌘⇧F)
 //!     │                        Sftp  → TerminalPane + SftpPanel
-//!     │                        other → EmptyState stub
+//!     │                        Snippets/Keys/PortForwarding/Keychain/Team/
+//!     │                        Settings/Account → the screen entity each
+//!     │                        factory mints once in [`AppShell::new`]
+//!     │                        Logs → EmptyState stub
 //!     └── status bar
-//! └── dialog overlay         — scrim + [`DialogFrame`] when a dialog is open
+//! └── dialog overlay         — scrim + [`DialogFrame`] when a dialog is open,
+//!                              the card filled in by the owning screen's
+//!                              `*_dialog_body`
 //! ```
 //!
-//! Later screen waves replace the stubs in place: the section nav, the
-//! contextual list and the routed center all switch on
+//! The section nav, the contextual list and the routed center all switch on
 //! [`TermiusState::current_section`], and each screen owns its slice of
 //! [`TermiusState`].
 
 use gpui::{
-    actions, div, px, AnyElement, App, AppContext as _, BorrowAppContext, Context, Entity,
+    actions, div, px, AnyElement, App, AppContext as _, BorrowAppContext, Context, Div, Entity,
     InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
     WindowHandle, WindowOptions,
@@ -36,6 +40,16 @@ use crate::app_state::{Dialog, TermiusState};
 use crate::navigation::{sidebar_items, Section};
 use crate::primitives::{Button, DialogFrame, EmptyState, SettingsText};
 use crate::theme::{theme_of, with_alpha, TermiusTheme, ThemeMode};
+use crate::views::account_screen::{account_screen, AccountScreen};
+use crate::views::host_dialog::host_dialog_body;
+use crate::views::keychain_screen::{keychain_screen, KeychainScreen};
+use crate::views::keys_screen::{key_dialog_body, keys_screen, KeysScreen};
+use crate::views::port_forwarding_screen::{
+    port_forward_dialog_body, port_forwarding_screen, PortForwardList,
+};
+use crate::views::settings_screen::{settings_screen, SettingsScreen};
+use crate::views::snippets_screen::{snippet_dialog_body, snippets_screen, SnippetsScreen};
+use crate::views::team_screen::{team_screen, TeamScreen};
 use crate::views::{HostList, SftpPanel, TabBar, TerminalPane};
 
 // Global actions bound app-wide (no key context: they fire from anywhere).
@@ -53,6 +67,15 @@ pub const STATUS_BAR_HEIGHT: f32 = 26.0;
 const NAV_ROW_HEIGHT: f32 = 28.0;
 /// Sidebar app-header height.
 const SIDEBAR_HEADER_HEIGHT: f32 = 36.0;
+
+/// A sized flex slot around one routed section screen.
+///
+/// The screen roots paint `size_full`, so they need a definite parent inside
+/// the center flex row: this slot takes the remaining width (`flex_1`) and
+/// the row's full height, and clips whatever the screen overflows.
+fn screen_slot(screen: impl IntoElement) -> Div {
+    div().flex_1().min_w(px(0.)).min_h(px(0.)).overflow_hidden().child(screen)
+}
 
 /// Install globals + keybindings. Call once from the app's `run` closure.
 ///
@@ -101,6 +124,14 @@ pub struct AppShell {
     tab_bar: Entity<TabBar>,
     terminal: Entity<TerminalPane>,
     sftp: Entity<SftpPanel>,
+    /// One entity per routed section screen (built once, never per frame).
+    snippets: Entity<SnippetsScreen>,
+    keys: Entity<KeysScreen>,
+    port_forwarding: Entity<PortForwardList>,
+    settings: Entity<SettingsScreen>,
+    account: Entity<AccountScreen>,
+    team: Entity<TeamScreen>,
+    keychain: Entity<KeychainScreen>,
     /// Re-render whenever the state entity changes.
     _observe_state: Subscription,
     /// Re-render on theme switches.
@@ -114,6 +145,19 @@ impl AppShell {
         let tab_bar = cx.new(|_cx| TabBar::new(state.clone()));
         let terminal = cx.new(|cx| TerminalPane::new(state.clone(), cx));
         let sftp = cx.new(|_cx| SftpPanel::new(state.clone()));
+
+        // Section screens: minted once, behind the state's update lease. The
+        // factories only `cx.new` their view entity (no `Entity::read` of the
+        // leased `TermiusState`), so this is the safe call site — each screen
+        // reads the state later, in its own `Render` (see `snippets_screen`).
+        let snippets = state.update(cx, |_, cx| snippets_screen(state.clone(), cx));
+        let keys = state.update(cx, |_, cx| keys_screen(state.clone(), cx));
+        let port_forwarding = state.update(cx, |_, cx| port_forwarding_screen(state.clone(), cx));
+        let settings = state.update(cx, |_, cx| settings_screen(state.clone(), cx));
+        let account = state.update(cx, |_, cx| account_screen(state.clone(), cx));
+        let team = state.update(cx, |_, cx| team_screen(state.clone(), cx));
+        let keychain = state.update(cx, |_, cx| keychain_screen(state.clone(), cx));
+
         let observe_state = cx.observe(&state, |_, _, cx| cx.notify());
         // gpui 0.2: `Context::observe_global` hands the observer the entity
         // plus its context (`FnMut(&mut V, &mut Context<V>)`).
@@ -125,6 +169,13 @@ impl AppShell {
             tab_bar,
             terminal,
             sftp,
+            snippets,
+            keys,
+            port_forwarding,
+            settings,
+            account,
+            team,
+            keychain,
             _observe_state: observe_state,
             _observe_theme: observe_theme,
         }
@@ -253,25 +304,55 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let title = dialog.title();
-        let section_label = dialog
-            .section()
-            .map(|section| section.label())
-            .unwrap_or("Termius")
-            .to_owned();
-        let body = match dialog.message() {
-            Some(message) => message.to_owned(),
-            None => format!("{title} — the {section_label} screen fills this dialog in."),
-        };
 
-        let frame = DialogFrame::new(title)
-            .child(SettingsText::new(body).element(theme))
-            .action(
-                Button::new("Close").primary().on_click(
-                    theme,
-                    cx.listener(|this, _event, _window, cx| this.close_dialog(cx)),
-                ),
-            )
-            .element(theme);
+        // Dispatch to the owning screen's body while the state entity is
+        // leased: every `*_dialog_body` takes `&TermiusState` + that entity's
+        // own `Context`, which gpui only hands out together inside
+        // `state.update(..)`. The snippet builder returns a complete
+        // [`DialogFrame`] card (title bar + Delete/Cancel/Save already in
+        // place); the host / key / port-forward builders return a bare body
+        // that carries its own action row, so it is framed without adding a
+        // second one.
+        let (body, complete_card) = self.state.update(cx, |state, cx| {
+            if let Some(card) = snippet_dialog_body(dialog, state, cx) {
+                (Some(card), true)
+            } else if let Some(body) = host_dialog_body(dialog, state, cx) {
+                (Some(body), false)
+            } else if let Some(body) = key_dialog_body(dialog, state, cx) {
+                (Some(body), false)
+            } else if let Some(body) = port_forward_dialog_body(dialog, state, cx) {
+                (Some(body), false)
+            } else {
+                (None, false)
+            }
+        });
+
+        let card: AnyElement = match body {
+            Some(body) if complete_card => body,
+            Some(body) => DialogFrame::new(title).child(body).element(theme).into_any_element(),
+            None => {
+                // Confirmations and unknown dialogs keep the generic card.
+                let section_label = dialog
+                    .section()
+                    .map(|section| section.label())
+                    .unwrap_or("Termius")
+                    .to_owned();
+                let message = match dialog.message() {
+                    Some(message) => message.to_owned(),
+                    None => format!("{title} — the {section_label} screen fills this dialog in."),
+                };
+                DialogFrame::new(title)
+                    .child(SettingsText::new(message).element(theme))
+                    .action(
+                        Button::new("Close").primary().on_click(
+                            theme,
+                            cx.listener(|this, _event, _window, cx| this.close_dialog(cx)),
+                        ),
+                    )
+                    .element(theme)
+                    .into_any_element()
+            }
+        };
 
         // Overlay pattern from gpui 0.2.2's own `window/prompts.rs`: absolute
         // scrim + absolute centered layer, both sized to the window.
@@ -301,7 +382,7 @@ impl AppShell {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(frame),
+                    .child(card),
             )
             .into_any_element()
     }
@@ -421,6 +502,15 @@ impl Render for AppShell {
                     div().w(px(SFTP_WIDTH)).min_w(px(SFTP_WIDTH)).child(self.sftp.clone()),
                 );
             }
+            Section::Snippets => middle = middle.child(screen_slot(self.snippets.clone())),
+            Section::Keys => middle = middle.child(screen_slot(self.keys.clone())),
+            Section::PortForwarding => {
+                middle = middle.child(screen_slot(self.port_forwarding.clone()))
+            }
+            Section::Keychain => middle = middle.child(screen_slot(self.keychain.clone())),
+            Section::Team => middle = middle.child(screen_slot(self.team.clone())),
+            Section::Settings => middle = middle.child(screen_slot(self.settings.clone())),
+            Section::Account => middle = middle.child(screen_slot(self.account.clone())),
             other => {
                 middle = middle.child(
                     EmptyState::new(
