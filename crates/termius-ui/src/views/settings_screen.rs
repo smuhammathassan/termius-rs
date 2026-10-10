@@ -3,16 +3,17 @@
 //!
 //! [`settings_screen`] builds a small self-contained view (GPUI renders the
 //! returned entity as a child, exactly like `HostList`), so the active sub-tab
-//! lives with the screen instead of on [`TermiusState`]. The tab labels come
-//! from [`settings_tabs`]; every row is a [`crate::primitives`] component, so a
-//! theme switch repaints this screen for free.
+//! lives with the screen instead of on [`TermiusState`]. Every row is a
+//! [`crate::primitives`] component, so a theme switch repaints this screen for
+//! free.
 //!
 //! ```text
 //! SettingsScreen                                        (root: --foreground)
-//! ├── header            — "Settings" bar (h 80, border-bottom)
+//! ├── header            — "Settings" bar (h 80, 25px top pad, border-bottom)
 //! └── body row
-//!     ├── tab column    — 220px; one 36px tab row per settings_tabs()
-//!     │                   (Terminal · SFTP · Logs · Advanced · Keyboard · Team)
+//!     ├── tab column    — 220px; one 36px tab row per reachable tab
+//!     │                   (Account · [SSH ID] · Terminal · SFTP · Logs ·
+//!     │                    Shortcuts; Team/Vaults/Invite People are PORT-TODO)
 //!     └── tab content   — scrolls; bg = --tab-content-color, one SettingsSection
 //!                         card (20px pad, --card-a, 10px radius, max 700) per
 //!                         group of controls
@@ -21,35 +22,50 @@
 //! The layout mirrors the recovered sources: `setting-process-7c44cf6f.js`
 //! (the window shell: `settingsHeader`, 220px `sidebar`, `settingsTabContent`)
 //! and the per-tab pages (`index-13781084.js` Terminal, `SftpSettings-*`,
-//! `LogsSettings-*`, `DeveloperTools-*`, `index-7370652f.js` Keyboard).
+//! `LogsSettings-*`, `index-7370652f.js` Shortcuts).
+//!
+//! # The real tab set
+//!
+//! The authoritative nav is the `settingsNavigationSelector` in
+//! `reconnectSaga-f0db0c3c.js` (see `analysis/recon/30-settings.md §1.1`):
+//! **Team, Account, Vaults, SSH ID, Invite People, Terminal, SFTP, Logs,
+//! Shortcuts**, filtered by ownership/team/auth/promo flags, with `defaultPath`
+//! `/manage-team` for a team owner else `/account`. The list is built locally
+//! by [`reachable_tabs`] (not `crate::navigation::settings_tabs`, which still
+//! holds the old invented list) so this file can carry the real order without
+//! touching an off-limits module. Only the tabs reachable with the current
+//! local model render: **Account** (always), **SSH ID** (signed in),
+//! **Terminal / SFTP / Logs / Shortcuts** (always). **Team / Vaults / Invite
+//! People** need ownership / team / trial-promo fields the model does not carry
+//! yet (PORT-TODO).
 //!
 //! # What actually mutates state
 //!
-//! * **Terminal** — `theme_mode`, `font_size`, `cursor_blink` and
-//!   `auto_reconnect` write straight into [`TermiusState::settings`];
-//!   `theme_mode` additionally repaints the [`TermiusTheme`] global.
-//! * **SFTP / Advanced / Logs** — the controls that have no field on
-//!   [`SettingsState`] yet flip view-local [`LocalToggles`] bools / the
-//!   [`LogLevel`] (PORT-TODO: hoist them into `SettingsState` once the model
-//!   grows). Every `Switch` still flips a real bool; none of them is a dead
-//!   pill.
+//! * **Terminal** — `font_size`, `font_family`, `scrollback_lines` and
+//!   `auto_reconnect` read straight from [`SettingsState`]; `Autoreconnect`
+//!   writes `auto_reconnect` back. Rows the model does not carry (Option-as-Meta,
+//!   Local Terminal Path, Keepalive, Detect OS, terminal theme, emulation) flip
+//!   view-local [`LocalToggles`] (PORT-TODO: hoist them once `SettingsState`
+//!   grows).
+//! * **Logs** — the per-vault "Log retention" row opens the shell-hosted
+//!   destructive confirmation via [`Dialog::Confirm`]; the toggle itself is
+//!   view-local (PORT-TODO: `state.vaults` + a log-retention slice).
 //!
-//! Numeric rows (`font_family`, `scrollback_lines`, paths) are display-only:
+//! Numeric rows (`font_family`, `scrollback_lines`, keepalive) are display-only:
 //! [`crate::primitives::InputField`] has no editing yet (see the PORT-TODO on
 //! that primitive). Dropdown rows have no popup primitive in gpui 0.2.2, so a
 //! click cycles the options in place — the value is still live.
 
 use gpui::{
-    div, px, AnyElement, App, AppContext as _, BorrowAppContext as _, ClickEvent, Context, Div,
-    Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, px, AnyElement, App, AppContext as _, ClickEvent, Context, Div, Entity, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
-use crate::app_state::{SettingsState, TermiusState};
+use crate::app_state::{Dialog, SettingsState, TermiusState};
 use crate::assets::icon;
-use crate::navigation::settings_tabs;
 use crate::primitives::{
-    Button, EmptyState, InputField, ListItem, SettingsSection, SettingsText, SettingsTitle, Switch,
+    Button, InputField, ListItem, SettingsSection, SettingsText, SettingsTitle, Switch,
 };
 use crate::theme::{text, theme_of, TermiusTheme, ThemeMode};
 
@@ -69,36 +85,141 @@ const MIN_FONT_SIZE: i32 = 6;
 const MAX_FONT_SIZE: i32 = 48;
 /// Terminal emulation types Termius offers (`index-13781084.js` `Bt`).
 const EMULATION_TYPES: [&str; 4] = ["xterm-256color", "xterm", "linux", "vt100"];
-
-// ---------------------------------------------------------------------------
-// Tab dispatch
-// ---------------------------------------------------------------------------
-
-/// Which pane a [`settings_tabs`] label opens.
+/// Terminal colour schemes the scheme selector offers.
 ///
-/// Dispatching on a name (instead of an index) keeps the screen honest if a
-/// tab is renamed: an unknown label renders a note rather than panicking.
+/// PORT-TODO: the original reads the real scheme registry
+/// (`currentColorSchemeName` + `getColorScheme`, `index-13781084.js`); this is a
+/// representative set until the palette model lands.
+const TERMINAL_THEMES: [&str; 3] = ["Default", "Solarized Dark", "Solarized Light"];
+/// Local terminal shells the path selector offers.
+///
+/// PORT-TODO: the original reads `localTerminalPath.customPaths` plus
+/// `defaultLocalTerminalShell` (`index-13781084.js`).
+const LOCAL_TERMINAL_PATHS: [&str; 3] = ["/bin/zsh", "/bin/bash", "/bin/sh"];
+/// The personal vault the Logs tab lists while `TermiusState` has no vault
+/// slice (PORT-TODO: read `state.vaults` once it lands).
+const DEFAULT_VAULT_NAME: &str = "Default";
+/// The Detect-OS script the accordion shows, verbatim from
+/// `index-13781084.js` (`Vt`, `:843-867`).
+const DETECT_OS_SCRIPT: &str = r#"# get the shell name to choose the script for detecting OS
+  echo $SHELL
+
+# for routeros
+  :put [/system resource get platform]
+
+# for fish shell
+  if set name (uname) = "Linux"
+      cat /etc/*release
+  else
+      uname
+  end
+
+# for others
+  HISTFILE=;
+  SA_OS_TYPE="Linux"
+  REAL_OS_NAME=`uname`
+  if [ "$REAL_OS_NAME" != "$SA_OS_TYPE" ] ;
+  then
+  echo `uname`
+  else
+  DISTRIB_ID="`cat /etc/*release`"
+  echo $DISTRIB_ID;
+  fi;
+  exit;"#;
+
+// ---------------------------------------------------------------------------
+// Tab set (the original `settingsNavigationSelector`)
+// ---------------------------------------------------------------------------
+
+/// One Settings tab, in the original selector's order.
+///
+/// The original array is `Team, Account, Vaults, SSH ID, Invite People,
+/// Terminal, SFTP, Logs, Shortcuts`; "Shortcuts" is the real label (the port
+/// used to invent "Keyboard"), and there is no "Advanced" tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum TabKind {
+    Team,
+    Account,
+    Vaults,
+    SshId,
+    InvitePeople,
     Terminal,
     Sftp,
     Logs,
-    Advanced,
-    Keyboard,
-    Team,
-    Unknown,
+    Shortcuts,
 }
 
-/// Map a settings tab label onto its [`TabKind`].
-fn tab_kind(label: &str) -> TabKind {
-    match label {
-        "Terminal" => TabKind::Terminal,
-        "SFTP" => TabKind::Sftp,
-        "Logs" => TabKind::Logs,
-        "Advanced" => TabKind::Advanced,
-        "Keyboard" => TabKind::Keyboard,
-        "Team" => TabKind::Team,
-        _ => TabKind::Unknown,
+impl TabKind {
+    /// The sidebar label Termius shows (`title` in the selector).
+    fn label(self) -> &'static str {
+        match self {
+            Self::Team => "Team",
+            Self::Account => "Account",
+            Self::Vaults => "Vaults",
+            Self::SshId => "SSH ID",
+            Self::InvitePeople => "Invite People",
+            Self::Terminal => "Terminal",
+            Self::Sftp => "SFTP",
+            Self::Logs => "Logs",
+            Self::Shortcuts => "Shortcuts",
+        }
+    }
+}
+
+impl Default for TabKind {
+    /// `defaultPath` is `/account` for a non-owner (and `/manage-team` for a
+    /// team owner — unreachable until ownership lands, see [`reachable_tabs`]).
+    fn default() -> Self {
+        Self::Account
+    }
+}
+
+/// The tabs reachable with the current selector inputs, in original order.
+///
+/// Mirrors `settingsNavigationSelector` (`reconnectSaga-f0db0c3c.js`):
+/// * **Team** when `is_team_owner` (also `defaultPath`),
+/// * **Account** always,
+/// * **Vaults** when `is_team`,
+/// * **SSH ID** when `is_authorized`,
+/// * **Invite People** when a team-trial promo shows && `is_authorized`,
+/// * **Terminal / SFTP / Logs / Shortcuts** always.
+///
+/// The owning render passes the flags it can read; ownership / team / promo
+/// have no model field yet, so it passes `false` for those (PORT-TODO).
+fn reachable_tabs(
+    is_team_owner: bool,
+    is_team: bool,
+    is_authorized: bool,
+    has_team_trial_promo: bool,
+) -> Vec<TabKind> {
+    let mut tabs = Vec::new();
+    if is_team_owner {
+        tabs.push(TabKind::Team);
+    }
+    tabs.push(TabKind::Account);
+    if is_team {
+        tabs.push(TabKind::Vaults);
+    }
+    if is_authorized {
+        tabs.push(TabKind::SshId);
+    }
+    if has_team_trial_promo && is_authorized {
+        tabs.push(TabKind::InvitePeople);
+    }
+    tabs.push(TabKind::Terminal);
+    tabs.push(TabKind::Sftp);
+    tabs.push(TabKind::Logs);
+    tabs.push(TabKind::Shortcuts);
+    tabs
+}
+
+/// The tab actually shown: `active` when it is still reachable, else the first
+/// reachable tab (Account, which is always present).
+fn visible_tab(active: TabKind, tabs: &[TabKind]) -> TabKind {
+    if tabs.contains(&active) {
+        active
+    } else {
+        tabs.first().copied().unwrap_or(TabKind::Account)
     }
 }
 
@@ -107,20 +228,14 @@ fn tab_kind(label: &str) -> TabKind {
 // ---------------------------------------------------------------------------
 
 /// A bool on [`TermiusState::settings`] a `Switch` can flip.
-///
-/// A (tiny) enum instead of a `fn(&mut SettingsState) -> &mut bool` pointer so
-/// the click listener stays a plain `Fn` with no higher-ranked closure
-/// coercion to guess at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingFlag {
-    CursorBlink,
     AutoReconnect,
 }
 
 /// Flip `flag` in `settings` (the caller notifies the state entity).
 fn flip_setting_flag(settings: &mut SettingsState, flag: SettingFlag) {
     let slot = match flag {
-        SettingFlag::CursorBlink => &mut settings.cursor_blink,
         SettingFlag::AutoReconnect => &mut settings.auto_reconnect,
     };
     *slot = !*slot;
@@ -133,15 +248,13 @@ enum LocalFlag {
     ImportShellHistory,
     CopyPaste,
     BellSound,
+    OptionAsMeta,
+    AllowLocalSsh,
     BrightenBold,
     KeywordHighlighting,
     PostQuantum,
-    SftpPreserveMtime,
-    SftpFollowSymlinks,
-    SftpShowHidden,
-    UsageData,
-    AutoUpdate,
-    ConfirmClose,
+    DetectOs,
+    DetectOsScriptOpen,
 }
 
 /// Flip `flag` in `local` (the caller notifies the view).
@@ -151,47 +264,15 @@ fn flip_local_flag(local: &mut LocalToggles, flag: LocalFlag) {
         LocalFlag::ImportShellHistory => &mut local.import_shell_history,
         LocalFlag::CopyPaste => &mut local.copy_paste,
         LocalFlag::BellSound => &mut local.bell_sound,
+        LocalFlag::OptionAsMeta => &mut local.option_as_meta,
+        LocalFlag::AllowLocalSsh => &mut local.allow_local_ssh,
         LocalFlag::BrightenBold => &mut local.brighten_bold,
         LocalFlag::KeywordHighlighting => &mut local.keyword_highlighting,
         LocalFlag::PostQuantum => &mut local.post_quantum,
-        LocalFlag::SftpPreserveMtime => &mut local.sftp_preserve_mtime,
-        LocalFlag::SftpFollowSymlinks => &mut local.sftp_follow_symlinks,
-        LocalFlag::SftpShowHidden => &mut local.sftp_show_hidden,
-        LocalFlag::UsageData => &mut local.usage_data,
-        LocalFlag::AutoUpdate => &mut local.auto_update,
-        LocalFlag::ConfirmClose => &mut local.confirm_close,
+        LocalFlag::DetectOs => &mut local.detect_os,
+        LocalFlag::DetectOsScriptOpen => &mut local.detect_os_script_open,
     };
     *slot = !*slot;
-}
-
-/// Log verbosity the Logs tab picks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warning,
-    Error,
-}
-
-impl LogLevel {
-    /// Every level, quietest first (the chooser's order).
-    pub const ALL: [LogLevel; 4] = [Self::Debug, Self::Info, Self::Warning, Self::Error];
-
-    /// The label Termius shows in the log-level picker.
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Debug => "Debug",
-            Self::Info => "Info",
-            Self::Warning => "Warning",
-            Self::Error => "Error",
-        }
-    }
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        Self::Info
-    }
 }
 
 /// Tabs whose switches have no field on [`SettingsState`] yet.
@@ -201,42 +282,40 @@ impl Default for LogLevel {
 /// grows, then delete this).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LocalToggles {
-    // Terminal (index-13781084.js).
-    /// Terminal settings: inline autocomplete (the "Beta" row).
+    // Terminal settings (index-13781084.js).
+    /// Inline autocomplete (the "Beta" row).
     autocomplete: bool,
-    /// Terminal settings: import the shell history on connect.
+    /// Import the shell history on connect.
     import_shell_history: bool,
-    /// Terminal settings: select-to-copy + right-click-to-paste.
+    /// Select-to-copy + right-click-to-paste.
     copy_paste: bool,
-    /// Terminal settings: beep on the terminal bell.
+    /// Beep on the terminal bell.
     bell_sound: bool,
-    /// Terminal settings: bright ANSI colours for bold text.
+    /// macOS: send Option as Meta (`U().platform === "mac"`).
+    option_as_meta: bool,
+    /// Sandbox: allow local SSH/SFTP connections.
+    allow_local_ssh: bool,
+    /// Bright ANSI colours for bold text.
     brighten_bold: bool,
-    /// Terminal settings: highlight keywords in output.
+    /// Highlight keywords in output.
     keyword_highlighting: bool,
-    /// Terminal settings: post-quantum key exchange.
+    /// Post-quantum key exchange.
     post_quantum: bool,
-    /// Terminal settings: selected emulation type (index into [`EMULATION_TYPES`]).
+    /// Execute a script on first connect to detect the host OS.
+    detect_os: bool,
+    /// Whether the "Detect OS Script" accordion is expanded.
+    detect_os_script_open: bool,
+    /// Selected emulation type (index into [`EMULATION_TYPES`]).
     emulation: usize,
-    // SFTP.
-    /// SFTP: keep the remote mtime on downloads/uploads.
-    sftp_preserve_mtime: bool,
-    /// SFTP: follow symbolic links while transferring.
-    sftp_follow_symlinks: bool,
-    /// SFTP: list dotfiles in the browser.
-    sftp_show_hidden: bool,
+    /// Selected terminal colour scheme (index into [`TERMINAL_THEMES`]).
+    terminal_theme: usize,
+    /// Selected local shell (index into [`LOCAL_TERMINAL_PATHS`]).
+    local_terminal_path: usize,
+    /// SSH keepalive interval in seconds (0 disables).
+    keepalive_interval: u32,
     // Logs.
-    /// Log level shown by the Logs tab.
-    log_level: LogLevel,
-    /// Whether the "open log folder" note is visible.
-    log_folder_note: bool,
-    // Advanced.
-    /// Advanced: send anonymous usage statistics.
-    usage_data: bool,
-    /// Advanced: download updates in the background.
-    auto_update: bool,
-    /// Advanced: confirm before closing a session tab.
-    confirm_close: bool,
+    /// Log retention for the personal vault (`LogsSettings-1defb994.js`).
+    log_retention: bool,
 }
 
 impl Default for LocalToggles {
@@ -246,18 +325,18 @@ impl Default for LocalToggles {
             import_shell_history: false,
             copy_paste: true,
             bell_sound: true,
+            option_as_meta: false,
+            allow_local_ssh: false,
             brighten_bold: false,
             keyword_highlighting: true,
             post_quantum: false,
+            detect_os: false,
+            detect_os_script_open: false,
             emulation: 0,
-            sftp_preserve_mtime: true,
-            sftp_follow_symlinks: false,
-            sftp_show_hidden: false,
-            log_level: LogLevel::Info,
-            log_folder_note: false,
-            usage_data: false,
-            auto_update: true,
-            confirm_close: true,
+            terminal_theme: 0,
+            local_terminal_path: 0,
+            keepalive_interval: 0,
+            log_retention: true,
         }
     }
 }
@@ -265,11 +344,6 @@ impl Default for LocalToggles {
 // ---------------------------------------------------------------------------
 // Element helpers
 // ---------------------------------------------------------------------------
-
-/// White used for text on an accent fill (the crate's `on_fill()` precedent).
-fn on_accent() -> gpui::Rgba {
-    gpui::rgb(0xff_ff_ff)
-}
 
 /// A [`Switch`] row with its click listener attached (the caller flips the
 /// backing bool). Faithful to `SettingsSwitch-200210fd.js`.
@@ -280,38 +354,6 @@ fn toggle(
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     Switch::new(label, on).element(theme).on_click(listener)
-}
-
-/// One pill of a small inline chooser (log level).
-fn choice(
-    id: SharedString,
-    label: SharedString,
-    active: bool,
-    theme: TermiusTheme,
-    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    let (fill, border) = if active {
-        (theme.accent, theme.accent)
-    } else {
-        (theme.tab_background, theme.border)
-    };
-    let text_color = if active { on_accent() } else { theme.muted };
-
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(24.))
-        .px(px(10.))
-        .rounded(px(4.))
-        .border_1()
-        .border_color(border)
-        .bg(fill)
-        .text_sm()
-        .text_color(text_color)
-        .child(label)
-        .on_click(listener)
 }
 
 /// A 12/500 row label (`--text-primary`), the left half of a settings row
@@ -432,8 +474,7 @@ fn size_box(theme: TermiusTheme, size: u16) -> Div {
 ///
 /// The card chrome (20px pad, `--card-a`, 10px radius, max-width 700, centred
 /// with a 30px top gap) comes from the ported [`SettingsSection`]; the rows go
-/// in as a single column so their own 15/20px margins set the rhythm (the
-/// original section has no internal gap either).
+/// in as a single column so their own 15/20px margins set the rhythm.
 fn settings_card(theme: TermiusTheme, title: &'static str, rows: Vec<AnyElement>) -> Div {
     let mut body = div().flex().flex_col();
     for row in rows {
@@ -483,11 +524,149 @@ fn tab_button(
     tab.hover(move |style| style.bg(hover_fill))
 }
 
+/// A `1px` hairline in `--background-entity` (`LogsSettings` `.divider`).
+fn divider(theme: TermiusTheme) -> Div {
+    div().w_full().h(px(1.)).bg(theme.card_b)
+}
+
+/// One keyword-highlighting colour swatch (`index-13781084.js` `Nt`):
+/// `marginTop:15px`, name left, a `50×25` colour rectangle right.
+fn swatch_row(theme: TermiusTheme, name: &'static str, color: u32) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .w_full()
+        .mt(px(15.))
+        .child(row_label(theme, name))
+        .child(
+            div()
+                .w(px(50.))
+                .h(px(25.))
+                .rounded(px(theme.corner_radius_small))
+                .bg(gpui::rgb(color)),
+        )
+}
+
+/// The Detect-OS script accordion (`index-13781084.js` `useQt`): a
+/// `--light-grey-6` / `--dark-grey-4` rounded container whose header toggles a
+/// monospace script body.
+///
+/// PORT-TODO: the chevron does not rotate (gpui 0.2.2 only rotates `Svg` via
+/// `Transformation`); the body simply shows/hides.
+fn detect_os_accordion(
+    theme: TermiusTheme,
+    open: bool,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    let fill = match theme.mode {
+        ThemeMode::Dark => theme.card_c,
+        ThemeMode::Light => theme.card_b,
+    };
+    let header = div()
+        .id("settings-detect-os-script")
+        .flex()
+        .items_center()
+        .justify_between()
+        .w_full()
+        .py(px(10.))
+        .cursor_pointer()
+        .child(SettingsTitle::new("Detect OS Script").element(theme))
+        .child(icon("allSettingsChevron.svg").w(px(15.)).h(px(6.)).text_color(theme.text_common))
+        .on_click(listener);
+
+    let mut container = div()
+        .flex()
+        .flex_col()
+        .mt(px(15.))
+        .px(px(10.))
+        .rounded(px(theme.corner_radius_small))
+        .bg(fill)
+        .child(header);
+    if open {
+        let mut script = div().flex().flex_col().pb(px(10.));
+        for line in DETECT_OS_SCRIPT.lines() {
+            script = script.child(
+                div()
+                    .font_family("monospace")
+                    .text_size(px(11.))
+                    .line_height(px(15.))
+                    .whitespace_nowrap()
+                    .text_color(theme.text_common)
+                    .child(SharedString::from(line.to_owned())),
+            );
+        }
+        container = container.child(script);
+    }
+    container
+}
+
+/// One per-vault "Log retention" row (`LogsSettings-1defb994.js` `M`): vault
+/// icon + name left, an Enabled/Disabled value + chevron right.
+fn vault_log_row(
+    theme: TermiusTheme,
+    name: &'static str,
+    enabled: bool,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let value = if enabled { "Enabled" } else { "Disabled" };
+    div()
+        .id(SharedString::from(format!("log-vault-{name}")))
+        .flex()
+        .items_center()
+        .justify_between()
+        .w_full()
+        .p(px(10.))
+        .rounded(px(theme.corner_radius_medium))
+        .cursor_pointer()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .pr(px(10.))
+                .min_w(px(0.))
+                .child(icon("Vault.svg").w(px(24.)).h(px(24.)).text_color(theme.muted))
+                .child(
+                    text::R14P
+                        .style(div())
+                        .truncate()
+                        .text_color(theme.title)
+                        .child(SharedString::from(name)),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .child(
+                    text::R12P
+                        .style(div())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.title)
+                        .child(SharedString::from(value)),
+                )
+                .child(icon("allSettingsChevron.svg").w(px(15.)).h(px(6.)).text_color(theme.text_common)),
+        )
+        .hover(move |style| style.bg(theme.hover))
+        .on_click(listener)
+}
+
 /// Step the font size by `delta`, clamped to [`MIN_FONT_SIZE`] /
 /// [`MAX_FONT_SIZE`] (never widens past either end).
 fn clamp_font_size(current: u16, delta: i32) -> u16 {
     let next = i32::from(current) + delta;
     next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE) as u16
+}
+
+/// The next index in a cycling chooser (wraps; empty stays at 0).
+fn next_index(current: usize, len: usize) -> usize {
+    if len == 0 {
+        0
+    } else {
+        (current + 1) % len
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -497,12 +676,13 @@ fn clamp_font_size(current: u16, delta: i32) -> u16 {
 /// The Settings screen: sidebar tab column + the active tab's controls.
 ///
 /// Built by [`settings_screen`] and rendered by the shell as a child element
-/// (like `HostList`); it owns only the active tab index and the toggles that
-/// have no [`SettingsState`] field yet.
+/// (like `HostList`); it owns only the active tab and the toggles that have no
+/// [`SettingsState`] field yet.
 pub struct SettingsScreen {
     state: Entity<TermiusState>,
-    /// Index into [`settings_tabs`].
-    active_tab: usize,
+    /// The active [`TabKind`] (re-validated against the reachable list each
+    /// render, so sign-in/out cannot leave a blank pane).
+    active_tab: TabKind,
     /// Toggle backing for the tabs not modelled on `SettingsState`.
     local: LocalToggles,
     /// Re-render whenever the state entity changes.
@@ -531,25 +711,22 @@ impl SettingsScreen {
         let observe_theme = cx.observe_global::<TermiusTheme>(|_, cx| cx.notify());
         Self {
             state,
-            active_tab: 0,
+            active_tab: TabKind::default(),
             local: LocalToggles::default(),
             _observe_state: observe_state,
             _observe_theme: observe_theme,
         }
     }
 
-    /// The tab actually shown (clamped, so a stale index can't go blank).
-    fn visible_tab(&self) -> usize {
-        self.active_tab.min(settings_tabs().len().saturating_sub(1))
+    /// The tab actually shown (falls back when the stored tab left the list).
+    fn visible_tab(&self, tabs: &[TabKind]) -> TabKind {
+        visible_tab(self.active_tab, tabs)
     }
 
     // ----- actions --------------------------------------------------------
 
-    fn select_tab(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= settings_tabs().len() {
-            return;
-        }
-        self.active_tab = index;
+    fn select_tab(&mut self, tab: TabKind, cx: &mut Context<Self>) {
+        self.active_tab = tab;
         cx.notify();
     }
 
@@ -561,44 +738,66 @@ impl SettingsScreen {
         });
     }
 
-    /// Flip a view-local toggle (SFTP / Advanced).
+    /// Flip a view-local toggle (Terminal / Detect OS).
     fn flip_local(&mut self, flag: LocalFlag, cx: &mut Context<Self>) {
         flip_local_flag(&mut self.local, flag);
         cx.notify();
     }
 
-    /// Pick the app palette: store the mode, then repaint the theme global so
-    /// every screen (and the terminal) follows immediately.
-    fn set_theme_mode(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| {
-            state.settings.theme_mode = mode;
-            cx.notify();
-        });
-        cx.update_global::<TermiusTheme, _>(|theme, cx| {
-            *theme = TermiusTheme::for_mode(mode);
-            cx.notify();
-        });
-    }
-
-    /// The theme dropdown: flip Dark ⇄ Light.
-    fn cycle_theme_mode(&mut self, cx: &mut Context<Self>) {
-        let next = match self.state.read(cx).settings.theme_mode {
-            ThemeMode::Dark => ThemeMode::Light,
-            ThemeMode::Light => ThemeMode::Dark,
-        };
-        self.set_theme_mode(next, cx);
-    }
-
     /// The emulation dropdown: step to the next [`EMULATION_TYPES`] entry.
     fn cycle_emulation(&mut self, cx: &mut Context<Self>) {
-        let count = EMULATION_TYPES.len();
-        self.local.emulation = (self.local.emulation + 1) % count;
+        self.local.emulation = next_index(self.local.emulation, EMULATION_TYPES.len());
         cx.notify();
     }
 
-    fn set_log_level(&mut self, level: LogLevel, cx: &mut Context<Self>) {
-        self.local.log_level = level;
+    /// The terminal-theme selector: step to the next [`TERMINAL_THEMES`] entry.
+    fn cycle_terminal_theme(&mut self, cx: &mut Context<Self>) {
+        self.local.terminal_theme = next_index(self.local.terminal_theme, TERMINAL_THEMES.len());
         cx.notify();
+    }
+
+    /// The local-path selector: step to the next [`LOCAL_TERMINAL_PATHS`] entry.
+    fn cycle_local_path(&mut self, cx: &mut Context<Self>) {
+        self.local.local_terminal_path =
+            next_index(self.local.local_terminal_path, LOCAL_TERMINAL_PATHS.len());
+        cx.notify();
+    }
+
+    /// Set the personal vault's log retention (the enable direction is direct;
+    /// disabling is gated behind the confirmation).
+    fn set_log_retention(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.local.log_retention = enabled;
+        cx.notify();
+    }
+
+    /// Raise the destructive "Confirm disabling logs" dialog
+    /// (`LogsSettings-1defb994.js` `usePe`).
+    ///
+    /// PORT-TODO: the shell's generic [`Dialog::Confirm`] cannot run the
+    /// original `Disable Logs` action on confirm, so the retention flag stays
+    /// enabled until the real confirm host lands.
+    fn request_disable_logs(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.open_dialog(
+                Dialog::Confirm {
+                    title: "Confirm disabling logs".to_owned(),
+                    message: "Termius will stop storing logs for this vault. You can turn \
+                              them back on at any time."
+                        .to_owned(),
+                },
+                cx,
+            );
+        });
+    }
+
+    /// "Let us know" on the keyword-highlighting card opens ProductBoard in the
+    /// original; surface a note until that bridge exists.
+    fn open_keyword_feedback(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.status_text =
+                "Keyword-highlighting feedback opens ProductBoard (PORT-TODO).".to_owned();
+            cx.notify();
+        });
     }
 
     fn adjust_font_size(&mut self, delta: i32, cx: &mut Context<Self>) {
@@ -606,12 +805,6 @@ impl SettingsScreen {
             state.settings.font_size = clamp_font_size(state.settings.font_size, delta);
             cx.notify();
         });
-    }
-
-    /// "Open log folder": reveal the note until a shell bridge can do it.
-    fn reveal_log_folder(&mut self, cx: &mut Context<Self>) {
-        self.local.log_folder_note = true;
-        cx.notify();
     }
 
     /// The "Text Size" row: label left, `−` / value / `+` right.
@@ -662,8 +855,9 @@ impl SettingsScreen {
 
     // ----- tabs -----------------------------------------------------------
 
-    /// Terminal: the inline `Autocomplete` row, the session switches, the font
-    /// card, the emulation picker, highlighting, scrollback + post-quantum.
+    /// Terminal: the `index-13781084.js` `Jt` section order — Terminal
+    /// settings, Font, Terminal theme, Keyword highlighting, Detect Host OS,
+    /// Local Terminal Path, Keepalive Interval, Scrollback, Post-Quantum.
     fn terminal_tab(
         &self,
         theme: TermiusTheme,
@@ -680,10 +874,9 @@ impl SettingsScreen {
             .child(beta_badge(theme));
         let emulation = EMULATION_TYPES[local.emulation.min(EMULATION_TYPES.len() - 1)];
         let autocomplete_value = if local.autocomplete { "Enabled" } else { "Disabled" };
-        let theme_value = match settings.theme_mode {
-            ThemeMode::Dark => "Dark",
-            ThemeMode::Light => "Light",
-        };
+        let terminal_theme = TERMINAL_THEMES[local.terminal_theme.min(TERMINAL_THEMES.len() - 1)];
+        let local_path =
+            LOCAL_TERMINAL_PATHS[local.local_terminal_path.min(LOCAL_TERMINAL_PATHS.len() - 1)];
 
         body.child(settings_card(
             theme,
@@ -710,15 +903,6 @@ impl SettingsScreen {
                 .into_any_element(),
                 toggle(
                     theme,
-                    "Cursor blink",
-                    settings.cursor_blink,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.flip_setting(SettingFlag::CursorBlink, cx);
-                    }),
-                )
-                .into_any_element(),
-                toggle(
-                    theme,
                     "Import shell history",
                     local.import_shell_history,
                     cx.listener(|this, _event, _window, cx| {
@@ -728,7 +912,7 @@ impl SettingsScreen {
                 .into_any_element(),
                 toggle(
                     theme,
-                    "Select text to copy & right click to paste",
+                    "Select text to copy & Right click to paste",
                     local.copy_paste,
                     cx.listener(|this, _event, _window, cx| {
                         this.flip_local(LocalFlag::CopyPaste, cx);
@@ -743,6 +927,32 @@ impl SettingsScreen {
                         this.flip_local(LocalFlag::BellSound, cx);
                     }),
                 )
+                .into_any_element(),
+                // macOS only in the original (`U().platform === "mac"`).
+                // PORT-TODO: no platform field on the model.
+                toggle(
+                    theme,
+                    "Use Option as Meta key",
+                    local.option_as_meta,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.flip_local(LocalFlag::OptionAsMeta, cx);
+                    }),
+                )
+                .into_any_element(),
+                // Sandbox only in the original. PORT-TODO: no sandbox flag.
+                toggle(
+                    theme,
+                    "Allow local SSH/SFTP connections",
+                    local.allow_local_ssh,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.flip_local(LocalFlag::AllowLocalSsh, cx);
+                    }),
+                )
+                .into_any_element(),
+                SettingsText::new(
+                    "Affects this device only, saved credentials will not be synced",
+                )
+                .element(theme)
                 .into_any_element(),
                 toggle(
                     theme,
@@ -775,24 +985,24 @@ impl SettingsScreen {
         ))
         .child(settings_card(
             theme,
-            "Theme",
+            "Terminal theme",
             vec![
                 dropdown_row(
                     theme,
-                    "settings-app-theme",
-                    row_label(theme, "App theme"),
-                    theme_value,
-                    cx.listener(|this, _event, _window, cx| this.cycle_theme_mode(cx)),
+                    "settings-terminal-theme",
+                    row_label(theme, "Terminal theme"),
+                    terminal_theme,
+                    cx.listener(|this, _event, _window, cx| this.cycle_terminal_theme(cx)),
                 )
                 .into_any_element(),
-                SettingsText::new("Applies to the app chrome and the terminal palette.")
+                SettingsText::new("Colour scheme for the terminal. Source: App Preferences.")
                     .element(theme)
                     .into_any_element(),
             ],
         ))
         .child(settings_card(
             theme,
-            "Highlighting",
+            "Keyword highlighting",
             vec![
                 toggle(
                     theme,
@@ -803,16 +1013,91 @@ impl SettingsScreen {
                     }),
                 )
                 .into_any_element(),
-                SettingsText::new("Highlight git, log and language output in the terminal.")
+                swatch_row(theme, "Errors", 0xf2_5e_61).into_any_element(),
+                swatch_row(theme, "Warnings", 0xe5_c0_7b).into_any_element(),
+                swatch_row(theme, "Success", 0x21_b5_68).into_any_element(),
+                swatch_row(theme, "Info", 0x56_b6_c2).into_any_element(),
+                SettingsText::new(
+                    "Would you like to add custom rules to highlight output in the terminal?",
+                )
+                .element(theme)
+                .into_any_element(),
+                Button::new("Let us know").primary().on_click(
+                    theme,
+                    cx.listener(|this, _event, _window, cx| this.open_keyword_feedback(cx)),
+                )
+                .into_any_element(),
+            ],
+        ))
+        .child(settings_card(
+            theme,
+            "Detect Host Operating System",
+            vec![
+                SettingsText::new(
+                    "This option will execute a script when connecting to a host for the first \
+                     time to detect its operating system. This will allow Termius to show a \
+                     corresponding OS icon in the list of hosts.",
+                )
+                .element(theme)
+                .into_any_element(),
+                SettingsText::new(
+                    "The script will be executed only if server didn't return anything about its \
+                     OS.",
+                )
+                .element(theme)
+                .into_any_element(),
+                toggle(
+                    theme,
+                    "Detect OS",
+                    local.detect_os,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.flip_local(LocalFlag::DetectOs, cx);
+                    }),
+                )
+                .into_any_element(),
+                detect_os_accordion(
+                    theme,
+                    local.detect_os_script_open,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.flip_local(LocalFlag::DetectOsScriptOpen, cx);
+                    }),
+                )
+                .into_any_element(),
+            ],
+        ))
+        .child(settings_card(
+            theme,
+            "Local Terminal Path",
+            vec![dropdown_row(
+                theme,
+                "settings-local-path",
+                row_label(theme, "Shell"),
+                local_path,
+                cx.listener(|this, _event, _window, cx| this.cycle_local_path(cx)),
+            )
+            .into_any_element()],
+        ))
+        .child(settings_card(
+            theme,
+            "Keepalive Interval",
+            vec![
+                SettingsText::new(
+                    "How often (in seconds) to send SSH-level keepalive packets to the server. \
+                     Set to 0 to disable.",
+                )
+                .element(theme)
+                .into_any_element(),
+                InputField::new("Interval", local.keepalive_interval.to_string())
                     .element(theme)
                     .into_any_element(),
+                SettingsText::new("second(s)").element(theme).into_any_element(),
             ],
         ))
         .child(settings_card(
             theme,
             "Scrollback",
             vec![
-                SettingsText::new("Limit the number of terminal rows. Set to 0 for the maximum.")
+                SettingsText::new("Limit number of terminal rows. Set to 0 to maximum limit size.")
                     .element(theme)
                     .into_any_element(),
                 InputField::new("Number of rows", settings.scrollback_lines.to_string())
@@ -822,7 +1107,7 @@ impl SettingsScreen {
         ))
         .child(settings_card(
             theme,
-            "Connection",
+            "Post-Quantum Key Exchange",
             vec![Switch::new("Post-Quantum Key Exchange", local.post_quantum)
                 .description("Turn off if you're experiencing issues with legacy devices")
                 .element(theme)
@@ -833,53 +1118,11 @@ impl SettingsScreen {
         ))
     }
 
-    /// SFTP: transfer toggles + path fields + the file-type-association card.
-    fn sftp_tab(&self, theme: TermiusTheme, body: Div, cx: &mut Context<Self>) -> Div {
-        let local = &self.local;
+    /// SFTP: **only** the "File type associations" card
+    /// (`SftpSettings-460ca9ed.js`). The original shows the associations table
+    /// when one exists, else this empty hero.
+    fn sftp_tab(&self, theme: TermiusTheme, body: Div) -> Div {
         body.child(settings_card(
-            theme,
-            "Transfers",
-            vec![
-                toggle(
-                    theme,
-                    "Preserve remote timestamps",
-                    local.sftp_preserve_mtime,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.flip_local(LocalFlag::SftpPreserveMtime, cx);
-                    }),
-                )
-                .into_any_element(),
-                toggle(
-                    theme,
-                    "Follow symbolic links",
-                    local.sftp_follow_symlinks,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.flip_local(LocalFlag::SftpFollowSymlinks, cx);
-                    }),
-                )
-                .into_any_element(),
-                toggle(
-                    theme,
-                    "Show hidden files",
-                    local.sftp_show_hidden,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.flip_local(LocalFlag::SftpShowHidden, cx);
-                    }),
-                )
-                .into_any_element(),
-            ],
-        ))
-        .child(settings_card(
-            theme,
-            "Paths",
-            vec![
-                InputField::new("Download folder", "~/Downloads")
-                    .element(theme)
-                    .into_any_element(),
-                InputField::new("Upload folder", "~/").element(theme).into_any_element(),
-            ],
-        ))
-        .child(settings_card(
             theme,
             "File type associations",
             vec![
@@ -887,8 +1130,8 @@ impl SettingsScreen {
                     .element(theme)
                     .into_any_element(),
                 SettingsText::new(
-                    "Apps you choose using \"Open with...\" to open files via SFTP will appear \
-                     here.",
+                    "Apps you choose using the “Open with…” option to open files via SFTP will \
+                     appear here.",
                 )
                 .element(theme)
                 .into_any_element(),
@@ -896,164 +1139,134 @@ impl SettingsScreen {
         ))
     }
 
-    /// Logs: level chooser + the "open log folder" action.
+    /// Logs: the per-vault "Log retention" list (`LogsSettings-1defb994.js`).
+    /// No log-level chooser and no open-folder action exist in the original.
     fn logs_tab(&self, theme: TermiusTheme, body: Div, cx: &mut Context<Self>) -> Div {
-        let level = self.local.log_level;
-        let mut chooser = div().flex().flex_row().gap(px(6.));
-        for candidate in LogLevel::ALL {
-            let active = candidate == level;
-            chooser = chooser.child(choice(
-                SharedString::from(format!("log-level-{}", candidate.label())),
-                SharedString::from(candidate.label()),
-                active,
-                theme,
-                cx.listener(move |this, _event, _window, cx| {
-                    this.set_log_level(candidate, cx);
-                }),
-            ));
-        }
-
-        let mut files = SettingsSection::new("Log files").child(
-            Button::new("Open log folder").secondary().on_click(
-                theme,
-                cx.listener(|this, _event, _window, cx| this.reveal_log_folder(cx)),
-            ),
+        let enabled = self.local.log_retention;
+        let row = vault_log_row(
+            theme,
+            DEFAULT_VAULT_NAME,
+            enabled,
+            cx.listener(|this, _event, _window, cx| {
+                if this.local.log_retention {
+                    this.request_disable_logs(cx);
+                } else {
+                    this.set_log_retention(true, cx);
+                }
+            }),
         );
-        if self.local.log_folder_note {
-            files = files.child(
-                SettingsText::new(
-                    "The log folder opens through the desktop shell bridge (PORT-TODO); logs \
-                     are mirrored to the console meanwhile.",
-                )
-                .element(theme),
-            );
-        }
 
         body.child(settings_card(
             theme,
-            "Level",
+            "Log retention",
             vec![
-                chooser.into_any_element(),
-                SettingsText::new("Info is the daily default; Debug is very noisy.")
+                SettingsText::new("Control how logs are stored in your vaults.")
                     .element(theme)
                     .into_any_element(),
-            ],
-        ))
-        .child(files.element(theme))
-    }
-
-    /// Advanced: application toggles + the data folder.
-    fn advanced_tab(&self, theme: TermiusTheme, body: Div, cx: &mut Context<Self>) -> Div {
-        let local = &self.local;
-        body.child(settings_card(
-            theme,
-            "Application",
-            vec![
-                toggle(
-                    theme,
-                    "Send anonymous usage data",
-                    local.usage_data,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.flip_local(LocalFlag::UsageData, cx);
-                    }),
-                )
-                .into_any_element(),
-                toggle(
-                    theme,
-                    "Download updates automatically",
-                    local.auto_update,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.flip_local(LocalFlag::AutoUpdate, cx);
-                    }),
-                )
-                .into_any_element(),
-                toggle(
-                    theme,
-                    "Confirm before closing a session",
-                    local.confirm_close,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.flip_local(LocalFlag::ConfirmClose, cx);
-                    }),
-                )
-                .into_any_element(),
-            ],
-        ))
-        .child(settings_card(
-            theme,
-            "Storage",
-            vec![
-                InputField::new("Data folder", "~/Library/Application Support/Termius")
-                    .element(theme)
-                    .into_any_element(),
-                SettingsText::new("The data folder is read-only for now (PORT-TODO: picker).")
-                    .element(theme)
-                    .into_any_element(),
+                divider(theme).into_any_element(),
+                row.into_any_element(),
             ],
         ))
     }
 
-    /// Keyboard: the desktop shortcut list (read-only rows until the keymap
-    /// editor lands).
-    fn keyboard_tab(&self, theme: TermiusTheme, body: Div) -> Div {
+    /// Shortcuts: the scheme's shortcut list. The full scheme editor
+    /// (select/rename/delete schemes, per-action rebinding, `KeyboardKey`) is
+    /// PORT-TODO (`index-7370652f.js`); the rows render Shortcut | Action.
+    fn shortcuts_tab(&self, theme: TermiusTheme, body: Div) -> Div {
         const SHORTCUTS: [(&str, &str); 6] = [
-            ("Toggle sidebar", "⌘B"),
-            ("Toggle SFTP panel", "⌘⇧F"),
-            ("Close tab", "⌘W"),
-            ("Copy selection", "⌘⇧C"),
-            ("Paste from clipboard", "⌘⇧V"),
-            ("Clear terminal", "⌘K"),
+            ("⌘B", "Toggle sidebar"),
+            ("⌘⇧F", "Toggle SFTP panel"),
+            ("⌘W", "Close tab"),
+            ("⌘⇧C", "Copy selection"),
+            ("⌘⇧V", "Paste from clipboard"),
+            ("⌘K", "Clear terminal"),
         ];
 
         let mut shortcuts = SettingsSection::new("Shortcuts");
-        for (action, keys) in SHORTCUTS {
-            shortcuts = shortcuts.child(ListItem::new(action, keys).element(theme));
+        for (keys, action) in SHORTCUTS {
+            shortcuts = shortcuts.child(ListItem::new(keys, action).element(theme));
         }
 
         body.child(
             SettingsText::new(
-                "Desktop defaults; rebinding arrives with the keymap editor (PORT-TODO).",
+                "Default scheme. The full scheme editor is PORT-TODO (index-7370652f.js).",
             )
             .element(theme),
         )
         .child(shortcuts.element(theme))
     }
 
-    /// Team: placeholder pointing at the Team section.
-    fn team_tab(&self, theme: TermiusTheme, body: Div) -> Div {
-        body.child(
-            div().h(px(240.)).child(
-                EmptyState::new(
-                    "Team & Vaults",
-                    "Shared hosts, keys and vaults live in the Team section — sign in to sync \
-                     them.",
-                )
-                .element(theme),
-            ),
-        )
-        .child(
-            SettingsText::new(
-                "Team settings open in the Team sidebar section once an account is signed in.",
+    /// Account: the original `/account` tab is the `Profile` page
+    /// (`index-fce1214f.js`: plan banner, subscription, 2FA, email, delete
+    /// account, Synchronization). The port carries it as the dedicated Account
+    /// section; this card points there (PORT-TODO: port the Profile tab).
+    fn account_tab(&self, theme: TermiusTheme, body: Div) -> Div {
+        body.child(settings_card(
+            theme,
+            "Account",
+            vec![SettingsText::new(
+                "Plan, two-factor authentication, email verification, account deletion and \
+                 Synchronization live in the Account section. PORT-TODO: port the Profile tab \
+                 (index-fce1214f.js).",
             )
-            .element(theme),
-        )
+            .element(theme)
+            .into_any_element()],
+        ))
+    }
+
+    /// SSH ID: reachable when signed in (`isUserAuthorized`). PORT-TODO: the
+    /// setup flow (`/sshid/setup`) is not ported yet.
+    fn ssh_id_tab(&self, theme: TermiusTheme, body: Div) -> Div {
+        body.child(settings_card(
+            theme,
+            "SSH ID",
+            vec![SettingsText::new(
+                "Register an SSH ID to authenticate without passwords. PORT-TODO: the SSH ID \
+                 setup flow (/sshid/setup) is not ported yet.",
+            )
+            .element(theme)
+            .into_any_element()],
+        ))
+    }
+
+    /// A tab the current model cannot reach yet (Team / Vaults / Invite
+    /// People): render its name and a PORT-TODO note.
+    fn pending_tab(&self, theme: TermiusTheme, tab: TabKind, body: Div) -> Div {
+        body.child(settings_card(
+            theme,
+            tab.label(),
+            vec![SettingsText::new(format!(
+                "The \"{}\" settings tab needs ownership / team / promo fields the local model \
+                 does not carry yet (PORT-TODO).",
+                tab.label()
+            ))
+            .element(theme)
+            .into_any_element()],
+        ))
     }
 }
 
 impl Render for SettingsScreen {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme_of(cx);
-        let settings = self.state.read(cx).settings.clone();
+        let (settings, signed_in) = {
+            let state = self.state.read(cx);
+            (state.settings.clone(), state.account.is_some())
+        };
 
-        let tabs = settings_tabs();
-        let index = self.visible_tab();
-        let label = tabs.get(index).copied().unwrap_or("Terminal");
+        // PORT-TODO: `isTeamOwner`, `isTeam` and the team-trial promo have no
+        // model field yet, so only the always-on tabs + SSH ID (signed in)
+        // render today. Flip these three once the team slice lands.
+        let tabs = reachable_tabs(false, false, signed_in, false);
+        let active = self.visible_tab(&tabs);
 
-        // Header: the original `settingsHeader` (h 80, bottom rule).
+        // Header: the original `settingsHeader` (h 80, 25px top pad, bottom rule).
         let header = div()
             .flex()
             .items_center()
             .flex_none()
             .h(px(HEADER_HEIGHT))
+            .pt(px(25.))
             .px(px(20.))
             .border_b_1()
             .border_color(theme.border)
@@ -1063,13 +1276,13 @@ impl Render for SettingsScreen {
         // Sidebar: the original 220px tab column (text-only rows with
         // hairline rules, selected row filled).
         let mut nav = div().flex().flex_col().w_full();
-        for (position, name) in tabs.iter().enumerate() {
-            let name = *name;
-            let active = position == index;
+        for (position, tab) in tabs.iter().enumerate() {
+            let tab = *tab;
+            let selected = tab == active;
             let last = position + 1 == tabs.len();
             nav = nav.child(
-                tab_button(theme, position, name, active, last).on_click(cx.listener(
-                    move |this, _event, _window, cx| this.select_tab(position, cx),
+                tab_button(theme, position, tab.label(), selected, last).on_click(cx.listener(
+                    move |this, _event, _window, cx| this.select_tab(tab, cx),
                 )),
             );
         }
@@ -1093,17 +1306,16 @@ impl Render for SettingsScreen {
             .min_h(px(0.))
             .pb(px(60.))
             .bg(theme.background);
-        content = match tab_kind(label) {
+        content = match active {
             TabKind::Terminal => self.terminal_tab(theme, &settings, content, cx),
-            TabKind::Sftp => self.sftp_tab(theme, content, cx),
+            TabKind::Sftp => self.sftp_tab(theme, content),
             TabKind::Logs => self.logs_tab(theme, content, cx),
-            TabKind::Advanced => self.advanced_tab(theme, content, cx),
-            TabKind::Keyboard => self.keyboard_tab(theme, content),
-            TabKind::Team => self.team_tab(theme, content),
-            TabKind::Unknown => content.child(
-                SettingsText::new(format!("The \"{label}\" tab has no controls yet."))
-                    .element(theme),
-            ),
+            TabKind::Shortcuts => self.shortcuts_tab(theme, content),
+            TabKind::Account => self.account_tab(theme, content),
+            TabKind::SshId => self.ssh_id_tab(theme, content),
+            TabKind::Team | TabKind::Vaults | TabKind::InvitePeople => {
+                self.pending_tab(theme, active, content)
+            }
         };
         let content = content.id("settings-content").overflow_y_scroll();
 
@@ -1132,70 +1344,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_settings_tab_maps_to_a_known_pane() {
-        let mut seen = std::collections::HashSet::new();
-        for label in settings_tabs() {
-            let kind = tab_kind(label);
-            assert_ne!(kind, TabKind::Unknown, "unmapped settings tab `{label}`");
-            assert!(seen.insert(kind), "duplicate pane for tab `{label}`");
-        }
-        // Six tabs, six distinct panes, and the array matches Termius.
-        assert_eq!(seen.len(), settings_tabs().len());
+    fn full_tab_set_matches_the_original_order() {
+        let tabs = reachable_tabs(true, true, true, true);
+        let labels: Vec<&str> = tabs.iter().map(|tab| tab.label()).collect();
         assert_eq!(
-            settings_tabs(),
-            ["Terminal", "SFTP", "Logs", "Advanced", "Keyboard", "Team"].as_slice()
+            labels,
+            [
+                "Team",
+                "Account",
+                "Vaults",
+                "SSH ID",
+                "Invite People",
+                "Terminal",
+                "SFTP",
+                "Logs",
+                "Shortcuts",
+            ]
         );
+    }
+
+    #[test]
+    fn signed_out_shows_only_the_always_on_tabs() {
+        let tabs = reachable_tabs(false, false, false, false);
+        let labels: Vec<&str> = tabs.iter().map(|tab| tab.label()).collect();
+        assert_eq!(labels, ["Account", "Terminal", "SFTP", "Logs", "Shortcuts"]);
+        // The default path is Account for a non-owner.
+        assert_eq!(tabs.first().copied(), Some(TabKind::Account));
+    }
+
+    #[test]
+    fn signing_in_adds_ssh_id_after_account() {
+        let tabs = reachable_tabs(false, false, true, false);
+        let labels: Vec<&str> = tabs.iter().map(|tab| tab.label()).collect();
+        assert_eq!(
+            labels,
+            ["Account", "SSH ID", "Terminal", "SFTP", "Logs", "Shortcuts"]
+        );
+    }
+
+    #[test]
+    fn team_owner_leads_with_team_and_the_promo_adds_invite_people() {
+        let owner = reachable_tabs(true, false, false, false);
+        assert_eq!(owner.first().copied(), Some(TabKind::Team));
+        // Invite People needs the promo *and* authorization.
+        assert!(!reachable_tabs(false, true, true, false).contains(&TabKind::InvitePeople));
+        assert!(reachable_tabs(false, true, true, true).contains(&TabKind::InvitePeople));
+    }
+
+    #[test]
+    fn labels_are_exact_and_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for tab in reachable_tabs(true, true, true, true) {
+            let label = tab.label();
+            assert!(!label.is_empty());
+            assert!(seen.insert(label), "duplicate settings tab `{label}`");
+        }
+        assert_eq!(TabKind::SshId.label(), "SSH ID");
+        assert_eq!(TabKind::InvitePeople.label(), "Invite People");
+        assert_eq!(TabKind::Shortcuts.label(), "Shortcuts");
+    }
+
+    #[test]
+    fn visible_tab_falls_back_when_the_active_tab_left_the_list() {
+        let tabs = reachable_tabs(false, false, false, false);
+        assert_eq!(visible_tab(TabKind::SshId, &tabs), TabKind::Account);
+        assert_eq!(visible_tab(TabKind::Terminal, &tabs), TabKind::Terminal);
+        assert_eq!(visible_tab(TabKind::SshId, &[] as &[TabKind]), TabKind::Account);
     }
 
     #[test]
     fn setting_flags_flip_the_stored_bools() {
         let mut settings = SettingsState::default();
-        assert!(settings.cursor_blink);
         assert!(settings.auto_reconnect);
-
-        flip_setting_flag(&mut settings, SettingFlag::CursorBlink);
-        assert!(!settings.cursor_blink);
-        flip_setting_flag(&mut settings, SettingFlag::CursorBlink);
-        assert!(settings.cursor_blink);
 
         flip_setting_flag(&mut settings, SettingFlag::AutoReconnect);
         assert!(!settings.auto_reconnect);
-        // The untouched field stays untouched.
+        flip_setting_flag(&mut settings, SettingFlag::AutoReconnect);
+        assert!(settings.auto_reconnect);
+
+        // Untouched fields stay untouched (cursor_blink is no longer a row).
         assert_eq!(settings.theme_mode, ThemeMode::Dark);
         assert_eq!(settings.font_size, 13);
+        assert!(settings.cursor_blink);
     }
 
     #[test]
     fn local_flags_flip_the_view_toggles() {
         let mut local = LocalToggles::default();
-        assert!(local.sftp_preserve_mtime);
-        assert!(!local.sftp_show_hidden);
-
-        flip_local_flag(&mut local, LocalFlag::SftpPreserveMtime);
-        flip_local_flag(&mut local, LocalFlag::SftpShowHidden);
-        assert!(!local.sftp_preserve_mtime);
-        assert!(local.sftp_show_hidden);
-
-        flip_local_flag(&mut local, LocalFlag::UsageData);
-        assert!(local.usage_data);
-        flip_local_flag(&mut local, LocalFlag::ConfirmClose);
-        assert!(!local.confirm_close);
-        // Log level is not a bool flag; it stays on the default.
-        assert_eq!(local.log_level, LogLevel::Info);
-    }
-
-    #[test]
-    fn terminal_flags_flip_the_view_toggles() {
-        let mut local = LocalToggles::default();
         assert!(local.autocomplete);
         assert!(!local.post_quantum);
-        // The emulation picker starts at the first type.
-        assert_eq!(EMULATION_TYPES[local.emulation], "xterm-256color");
+        assert!(!local.option_as_meta);
+        assert!(!local.detect_os_script_open);
 
         flip_local_flag(&mut local, LocalFlag::Autocomplete);
         flip_local_flag(&mut local, LocalFlag::PostQuantum);
+        flip_local_flag(&mut local, LocalFlag::OptionAsMeta);
+        flip_local_flag(&mut local, LocalFlag::DetectOsScriptOpen);
         assert!(!local.autocomplete);
         assert!(local.post_quantum);
+        assert!(local.option_as_meta);
+        assert!(local.detect_os_script_open);
+
+        // Log retention is not a bool flag; it stays on its default.
+        assert!(local.log_retention);
     }
 
     #[test]
@@ -1213,18 +1464,21 @@ mod tests {
     }
 
     #[test]
-    fn log_levels_are_ordered_and_unique() {
-        let labels: Vec<&str> = LogLevel::ALL.iter().map(|level| level.label()).collect();
-        assert_eq!(labels, ["Debug", "Info", "Warning", "Error"]);
-        let mut seen = std::collections::HashSet::new();
-        for level in LogLevel::ALL {
-            assert!(
-                seen.insert(level.label()),
-                "duplicate level `{}`",
-                level.label()
-            );
-        }
-        assert_eq!(LogLevel::default(), LogLevel::Info);
+    fn cycling_choosers_wrap() {
+        assert_eq!(next_index(0, 4), 1);
+        assert_eq!(next_index(3, 4), 0);
+        assert_eq!(next_index(0, 0), 0);
+        // The emulation picker starts at the first type.
+        assert_eq!(EMULATION_TYPES[0], "xterm-256color");
+        assert_eq!(TERMINAL_THEMES[0], "Default");
+        assert_eq!(LOCAL_TERMINAL_PATHS[0], "/bin/zsh");
+    }
+
+    #[test]
+    fn detect_os_script_is_the_original() {
+        assert!(DETECT_OS_SCRIPT.contains("SA_OS_TYPE"));
+        assert!(DETECT_OS_SCRIPT.contains("/system resource get platform"));
+        assert!(DETECT_OS_SCRIPT.contains("DISTRIB_ID"));
     }
 
     #[test]
@@ -1232,22 +1486,8 @@ mod tests {
         // Constructing (not painting) the interactive helpers must not need a
         // window: this is what each tab does inside `render`.
         let theme = TermiusTheme::dark();
-        let _ = toggle(theme, "Cursor blink", true, |_, _, _| {});
-        let _ = toggle(theme, "Auto-reconnect", false, |_, _, _| {});
-        let _ = choice(
-            SharedString::from("theme-mode-dark"),
-            SharedString::from("Dark"),
-            true,
-            theme,
-            |_, _, _| {},
-        );
-        let _ = choice(
-            SharedString::from("theme-mode-light"),
-            SharedString::from("Light"),
-            false,
-            theme,
-            |_, _, _| {},
-        );
+        let _ = toggle(theme, "Detect OS", true, |_, _, _| {});
+        let _ = toggle(theme, "Autoreconnect", false, |_, _, _| {});
         let _ = dropdown_row(
             theme,
             "settings-autocomplete",
@@ -1260,5 +1500,9 @@ mod tests {
         let _ = size_box(theme, 13);
         let _ = beta_badge(theme);
         let _ = tab_button(theme, 0, "Terminal", true, false);
+        let _ = divider(theme);
+        let _ = swatch_row(theme, "Errors", 0xf2_5e_61);
+        let _ = detect_os_accordion(theme, true, |_, _, _| {});
+        let _ = vault_log_row(theme, "Default", true, |_, _, _| {});
     }
 }

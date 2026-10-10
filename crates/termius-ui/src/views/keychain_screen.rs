@@ -1,26 +1,40 @@
-//! keychain_screen — the Keychain section: named vaults of stored secrets.
+//! keychain_screen — the **Vaults** management screen (the original's
+//! "Keychain" surfaces, part b).
 //!
-//! Port of Termius' **Vault › Keychain** screen. The original
-//! (`ConnectedVaultKeychain` in `analysis/readable/_main.js`, seeded from
-//! `analysis/termius-extracted/ui-process/assets/Vaults-ef2e0d94.js`) renders
-//! each vault as an `EntityReceipt`: a leading real icon, a title over a dim
-//! subtitle, and a trailing `dots.svg` context-menu anchor, with hover
-//! (`--blue-a10`) / selected (`--list-select`) fills.
+//! Reconstructed from `analysis/recon/11-vaults.md` and
+//! `analysis/recon/23-keychain.md`: in the shipped Termius v10, the word
+//! "Keychain" maps onto **three** distinct surfaces — (a) the Keys / Identities
+//! *section* (see [`crate::views::keys_screen`]), (b) this **Vaults management
+//! screen** (`assets/Vaults-ef2e0d94.js`), and (c) the **ChangeVault wizard**
+//! ("Choose where to store credentials", `assets/ChangeVault-4b860408.js`).
 //!
-//! This port keeps that anatomy for each keychain and, under an expanded one,
-//! lists its entries indented beneath it:
+//! The earlier port modelled a nonexistent flat list of "keychains of secrets"
+//! (title over `"{n} secret(s)"` with expandable masked entries). No such screen
+//! exists in the original, so this module now renders the vault list:
 //!
-//! * **keychain rows** — `keys.svg` glyph, the title (`R14P`) over
-//!   `"{n} secret(s)"` (`R12S`), trailing `dots.svg`; clicking toggles the
-//!   expansion (the original opens the entry).
-//! * **entry rows** — `Lock.svg` glyph, the owning record id (`R12P`) over a
-//!   fixed mask (`R12S`); indented under the parent.
+//! * **No title band** — the primary action is the **first child of the shared
+//!   [`FiltersHeader`]**, exactly like every other section.
+//! * **Vault rows** ([`EntityRow`]): the vault glyph, the vault name
+//!   (`getVaultName`: `"{name} vault"` for the default vault), and — revealed
+//!   once the row is selected, mirroring the original's hover/selected stats
+//!   reveal — the per-type counts (hosts · snippets · keys · identities ·
+//!   port-forwarding rules).
+//! * **Vault editor panel** (the original `VaultEditorSlider`): the selected
+//!   vault's name, its per-type stats with their icons, and the
+//!   **Change vault…** entry point into the wizard.
+//! * **ChangeVault wizard** (the original `Le` step, `ChangeVault-4b860408.js`):
+//!   the "Choose where to store credentials" dialog with the three credential
+//!   modes (personal / shared / multikey).
 //!
-//! # Secrets never render
+//! # PORT-TODOs (model gaps)
 //!
-//! Rows show `entry.owner_id` and a fixed mask ([`SECRET_MASK`]);
-//! `KeychainEntry::secret` is not read anywhere in this module —
-//! `entry_summaries_never_expose_secrets` guards that contract.
+//! * `Keychain` is the port's vault record: it has no `isDefault` flag and the
+//!   library records carry no `vault_id`, so vault membership cannot be
+//!   computed — the per-type counts are **library-wide** and the wizard's
+//!   "Continue" is a stub.
+//! * There is no vault CRUD in [`TermiusState`], so "New vault" / "Create
+//!   vault" surface a status note (the original opens the create form).
+//! * `InputField` is display-only; the vault-name field shows a placeholder.
 //!
 //! # Wire contract
 //!
@@ -30,285 +44,669 @@
 //! `TermiusState` update, and gpui leases one entity at a time — reading the
 //! state while it is leased would panic. The view reads the library in its
 //! own `render` (by then no lease is held), and every click notifies the
-//! state so the shell's observer repaints:
-//!
-//! ```ignore
-//! // inside AppShell::render:
-//! let screen = self
-//!     .state
-//!     .update(cx, |_, cx| keychain_screen(self.state.clone(), cx));
-//! ```
+//! screen so it repaints.
 
 use gpui::{
-    div, px, AppContext as _, ClickEvent, Context, Div, Entity, FontWeight, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
+    div, px, AppContext as _, Context, Div, Entity, FontWeight, Global, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, Window,
 };
 use termius_core::Keychain;
 
 use crate::app_state::TermiusState;
-use crate::primitives::{EmptyState, SectionHeader, SettingsText};
-use crate::theme::{over, text, theme_of, with_alpha, TermiusTheme, ThemeMode};
+use crate::assets::{icon, UI_FONT};
+use crate::primitives::{Button, ButtonSize, EntityRow, FiltersHeader, InputField};
+use crate::theme::{text, theme_of, with_alpha, TermiusTheme, ThemeMode};
 
-/// Fixed mask shown in place of a stored secret.
-const SECRET_MASK: &str = "••••••••";
-
-/// Row height for a two-line receipt (title 14px over meta 12px).
-const ROW_HEIGHT: f32 = 44.0;
-/// Entry row height (single dense line).
-const ENTRY_HEIGHT: f32 = 34.0;
-/// Entity icon tile size (original `entityIcon`).
-const ICON_TILE: f32 = 28.0;
-/// Glyph inside the icon tile.
-const ICON_GLYPH: f32 = 16.0;
-/// Indent applied to an expanded keychain's entry rows.
-const ENTRY_INDENT: f32 = 40.0;
-/// White used for text/glyphs on the accent button fill.
+/// `GridItemPresenter.entityItem` — radius of the row card (used by the editor
+/// panel too).
+const ENTITY_RADIUS: f32 = 14.0;
+/// White used for text/glyphs on the accent fill.
 const ON_ACCENT: gpui::Rgba = gpui::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+/// The ChangeVault dialog shell (`ChangeVault-4b860408.js`: `720×540`).
+const WIZARD_WIDTH: f32 = 720.0;
+/// The vault editor panel width (the original `RightSlider` is `552px`; the
+/// port keeps a narrower details column).
+const EDITOR_WIDTH: f32 = 320.0;
+
+// ---------------------------------------------------------------------------
+// Vault iconography
+// ---------------------------------------------------------------------------
+
+/// The vault row glyph (`vault.react-93164eff.svg` / `vault.highlighted`).
+const VAULT_ICON: &str = "vault__93164e.svg";
+const VAULT_ICON_SELECTED: &str = "vault.highlighted.svg";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested without a window)
 // ---------------------------------------------------------------------------
 
-/// The row subtitle: `"{n} secret(s)"` for a keychain's entry count.
-fn secret_count_label(count: usize) -> String {
-    if count == 1 {
-        "1 secret".to_owned()
+/// `getVaultName` (`/tmp/reconnectSaga.js:72955`): the default / id-less vault
+/// gets a `" vault"` suffix; an unnamed named vault is `"Unnamed"`.
+fn vault_name(keychain: &Keychain) -> String {
+    let title = keychain.title.trim();
+    if keychain.id.is_empty() {
+        if title.is_empty() {
+            "Personal vault".to_owned()
+        } else {
+            format!("{title} vault")
+        }
+    } else if title.is_empty() {
+        "Unnamed".to_owned()
     } else {
-        format!("{count} secrets")
+        title.to_owned()
     }
 }
 
-/// The row label: the keychain's title, or a placeholder when untitled.
-fn keychain_label(keychain: &Keychain) -> String {
-    if keychain.title.trim().is_empty() {
-        "Untitled Keychain".to_owned()
-    } else {
-        keychain.title.clone()
-    }
-}
-
-/// Safe summary rows for one keychain's entries: `(owner_id, mask)`.
+/// Per-type counts shown on a vault row / editor (`VaultStats`).
 ///
-/// The only entry data this screen renders — `KeychainEntry::secret` never
-/// leaves the record.
-fn entry_labels(keychain: &Keychain) -> Vec<(String, String)> {
-    keychain
-        .entries
-        .iter()
-        .map(|entry| (entry.owner_id.clone(), SECRET_MASK.to_owned()))
-        .collect()
+/// PORT-TODO: the model has no vault membership, so these are library-wide.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct VaultCounts {
+    hosts: usize,
+    snippets: usize,
+    keys: usize,
+    identities: usize,
+    forwards: usize,
+}
+
+impl VaultCounts {
+    /// Whether every count is zero.
+    fn is_empty(&self) -> bool {
+        self.hosts == 0
+            && self.snippets == 0
+            && self.keys == 0
+            && self.identities == 0
+            && self.forwards == 0
+    }
+}
+
+/// Append `"{n} {label}"` (pluralised) when `count > 0`.
+fn push_count(parts: &mut Vec<String>, count: usize, singular: &str, plural: &str) {
+    if count == 0 {
+        return;
+    }
+    if count == 1 {
+        parts.push(format!("1 {singular}"));
+    } else {
+        parts.push(format!("{count} {plural}"));
+    }
+}
+
+/// The vault row subtitle: the per-type counts (`VaultStats`), or `"Empty"`.
+fn vault_stats_summary(counts: &VaultCounts) -> String {
+    let mut parts = Vec::new();
+    push_count(&mut parts, counts.hosts, "host", "hosts");
+    push_count(&mut parts, counts.snippets, "snippet", "snippets");
+    push_count(&mut parts, counts.keys, "key", "keys");
+    push_count(&mut parts, counts.identities, "identity", "identities");
+    push_count(&mut parts, counts.forwards, "rule", "rules");
+    if parts.is_empty() {
+        "Empty".to_owned()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+/// The credential modes of the ChangeVault wizard
+/// (`ChangeVault-4b860408.js:540`, `Le`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeVaultMode {
+    /// `no_credentials_sharing` — credentials stay in personal vaults.
+    NoCredentialsSharing,
+    /// `credentials_sharing` — credentials move to the target vault.
+    CredentialsSharing,
+    /// `multikey` — personal unextractable passkeys.
+    Multikey,
+}
+
+impl ChangeVaultMode {
+    /// All options, in the original order.
+    const ALL: [Self; 3] = [
+        Self::NoCredentialsSharing,
+        Self::CredentialsSharing,
+        Self::Multikey,
+    ];
+
+    /// The option body verbatim from `ChangeVault-4b860408.js:540`.
+    fn body(self) -> &'static str {
+        match self {
+            Self::NoCredentialsSharing => {
+                "Your credentials are not shared. Vault members connect with credentials from their personal vaults."
+            }
+            Self::CredentialsSharing => {
+                "Your credentials are shared. Vault members connect with credentials you move to this vault."
+            }
+            Self::Multikey => {
+                "Vault members connect with personal unextractable passkeys generated on each device."
+            }
+        }
+    }
+
+    /// The option label: the personal / target vault name, or `"Multikey"`.
+    fn label(self, target_vault: &str) -> String {
+        match self {
+            Self::NoCredentialsSharing => "Personal vault".to_owned(),
+            Self::CredentialsSharing => target_vault.to_owned(),
+            Self::Multikey => "Multikey".to_owned(),
+        }
+    }
+}
+
+/// The ChangeVault operation verb (`$e`, `:534`): moving / copying / …
+fn change_vault_operation() -> &'static str {
+    "moving to"
 }
 
 // ---------------------------------------------------------------------------
-// Row / button chrome (mirrors the Port Forwarding screen)
+// Row / button chrome
 // ---------------------------------------------------------------------------
 
-/// The primary toolbar action: an accent button with a leading `addCircle.svg`
-/// glyph (the original `New key` toolbar button metrics).
-fn new_action_button(
+/// The primary header action: `plusThin.svg` + label on the accent fill (the
+/// original `New …` split button; the thin plus, not `addCircle.svg`).
+fn new_vault_button(
     theme: TermiusTheme,
-    id: &str,
-    label: &'static str,
-    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> Stateful<Div> {
-    let hover_fill = over(theme.primary, with_alpha(ON_ACCENT, 0.25));
+    let hover_fill = with_alpha(ON_ACCENT, 0.12);
     div()
-        .id(SharedString::from(id.to_owned()))
+        .id("vault-new")
         .flex()
         .items_center()
         .justify_center()
         .gap(px(6.))
         .h(px(36.))
-        .px(px(16.))
+        .px(px(14.))
         .rounded(px(theme.corner_radius_medium))
         .bg(theme.primary)
         .text_color(ON_ACCENT)
-        .font_family(crate::assets::UI_FONT)
+        .font_family(UI_FONT)
         .text_size(px(14.))
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
-        .child(crate::icon("addCircle.svg").w(px(14.)).h(px(14.)))
-        .child(label)
-        .hover(move |hover| hover.bg(hover_fill))
+        .child(icon("plusThin.svg").w(px(14.)).h(px(14.)))
+        .child(SharedString::from("New vault"))
+        .hover(move |style| style.bg(hover_fill))
         .on_click(listener)
 }
 
-/// The square entity-icon tile shared by every row (card-tinted square, muted
-/// glyph).
-fn icon_tile(theme: TermiusTheme, icon_name: &str) -> Div {
-    let tile_bg = match theme.mode {
-        ThemeMode::Dark => theme.card_c,
-        ThemeMode::Light => theme.card_b,
-    };
+/// A small ghost action button with a caller-supplied id (so the header and
+/// the editor panel can both offer "Change vault…" without colliding).
+fn ghost_button(
+    theme: TermiusTheme,
+    id: &str,
+    label: &'static str,
+    listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> Stateful<Div> {
     div()
+        .id(SharedString::from(id.to_owned()))
         .flex()
         .items_center()
         .justify_center()
-        .w(px(ICON_TILE))
-        .h(px(ICON_TILE))
-        .flex_shrink_0()
-        .rounded(px(theme.corner_radius_small))
-        .bg(tile_bg)
-        .text_color(theme.muted)
-        .child(crate::icon(icon_name).w(px(ICON_GLYPH)).h(px(ICON_GLYPH)))
+        .h(px(24.))
+        .px(px(10.))
+        .rounded(px(6.))
+        .text_color(theme.primary)
+        .font_family(UI_FONT)
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
+        .child(SharedString::from(label))
+        .hover(move |style| style.bg(theme.hover))
+        .on_click(listener)
 }
 
-/// The trailing `dots.svg` overflow affordance (the original row's context-menu
-/// anchor).
-///
-/// PORT-TODO: gpui 0.2.2 has no anchored popup menu here, so the affordance is
-/// decorative for now (the same PORT-TODO `views::host_list` carries).
-fn row_dots(theme: TermiusTheme, id: &str) -> Stateful<Div> {
+/// `--entity-item-background`: `--white` (light) / `--dark-grey-3` (dark).
+fn entity_bg(theme: TermiusTheme) -> gpui::Rgba {
+    match theme.mode {
+        ThemeMode::Light => theme.card_c,
+        ThemeMode::Dark => theme.card_a,
+    }
+}
+
+/// `--list-hover-hover`: `--light-grey-5` (light) / `--dark-grey-4` (dark).
+fn entity_hover(theme: TermiusTheme) -> gpui::Rgba {
+    match theme.mode {
+        ThemeMode::Light => theme.card_b,
+        ThemeMode::Dark => theme.card_c,
+    }
+}
+
+/// One per-type stat row in the editor panel: icon · count · label.
+fn stat_row(theme: TermiusTheme, icon_name: &'static str, count: usize, label: &'static str) -> Div {
     div()
-        .id(SharedString::from(format!("keychain-menu-{id}")))
         .flex()
         .items_center()
-        .justify_center()
-        .w(px(24.))
-        .h(px(24.))
-        .flex_shrink_0()
-        .text_color(theme.muted)
-        .child(crate::icon("dots.svg").w(px(12.)).h(px(4.)))
+        .gap(px(8.))
+        .child(icon(icon_name).w(px(14.)).h(px(14.)).text_color(theme.text_common))
+        .child(
+            text::R12P
+                .style(div())
+                .text_color(theme.title)
+                .child(SharedString::from(count.to_string())),
+        )
+        .child(
+            text::R12S
+                .style(div())
+                .text_color(theme.text_common)
+                .child(SharedString::from(label)),
+        )
+}
+
+/// One ChangeVault radio option (`RadioOptionsList`): a radio glyph, the
+/// option label over its body copy.
+fn radio_option(
+    theme: TermiusTheme,
+    mode: ChangeVaultMode,
+    target_vault: &str,
+    selected: bool,
+    cx: &mut Context<KeychainScreen>,
+) -> Stateful<Div> {
+    let base = entity_bg(theme);
+    let hover = entity_hover(theme);
+    let border = if selected { theme.border_accent } else { base };
+    let glyph = if selected { "checked.svg" } else { "unchecked.svg" };
+    let label = mode.label(target_vault);
+    div()
+        .id(SharedString::from(format!("vault-mode-{label}")))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .p(px(10.))
+        .rounded(px(ENTITY_RADIUS))
+        .border_2()
+        .border_color(border)
+        .bg(base)
+        .text_color(theme.title)
+        .hover(move |style| style.bg(hover).border_color(hover))
+        .child(
+            icon(glyph)
+                .w(px(18.))
+                .h(px(18.))
+                .flex_shrink_0()
+                .text_color(if selected { theme.primary } else { theme.text_common }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.))
+                .child(
+                    text::R14P
+                        .style(div())
+                        .text_color(theme.title)
+                        .truncate()
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    text::R12S
+                        .style(div())
+                        .text_color(theme.text_common)
+                        .child(SharedString::from(mode.body())),
+                ),
+        )
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            this.wizard_mode = mode;
+            cx.notify();
+        }))
 }
 
 // ---------------------------------------------------------------------------
 // The screen
 // ---------------------------------------------------------------------------
 
-/// The process-wide Keychain screen instance.
-///
-/// The shell re-runs [`keychain_screen`] on every repaint, so the view (and
-/// with it the expansion state) lives in a gpui [`Global`] instead of being
-/// rebuilt — and losing its selection — each frame.
+/// The process-wide Vaults screen instance (keeps the selection + wizard state
+/// across the shell's re-renders).
 #[derive(Clone, Default)]
 struct KeychainScreenHost(Option<Entity<KeychainScreen>>);
 
 impl Global for KeychainScreenHost {}
 
-/// The Keychain section body (Termius' Vault › Keychain screen).
+/// The Vaults management screen (the original's "Keychain" vault surface).
 pub struct KeychainScreen {
     state: Entity<TermiusState>,
-    /// The expanded keychain (one at a time); `None` = all collapsed.
-    expanded: Option<String>,
+    /// The vault whose editor panel is open.
+    selected: Option<String>,
+    /// The ChangeVault wizard is showing.
+    wizard_open: bool,
+    /// The wizard's chosen credential mode.
+    wizard_mode: ChangeVaultMode,
 }
 
 impl KeychainScreen {
     fn new(state: Entity<TermiusState>) -> Self {
-        Self { state, expanded: None }
+        Self {
+            state,
+            selected: None,
+            wizard_open: false,
+            wizard_mode: ChangeVaultMode::CredentialsSharing,
+        }
     }
 
-    /// Expand `keychain_id`, or collapse it when it is already open.
-    fn toggle_expanded(&mut self, keychain_id: &str) {
-        self.expanded = if self.expanded.as_deref() == Some(keychain_id) {
+    /// Select a vault row (opens its editor panel).
+    fn select_vault(&mut self, vault_id: &str, cx: &mut Context<Self>) {
+        self.selected = if self.selected.as_deref() == Some(vault_id) {
             None
         } else {
-            Some(keychain_id.to_owned())
+            Some(vault_id.to_owned())
         };
+        cx.notify();
     }
 
-    /// One keychain receipt: `keys.svg` tile · title/meta · trailing dots.
-    fn keychain_row(
-        &self,
-        theme: TermiusTheme,
-        keychain: &Keychain,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let is_expanded = self.expanded.as_deref() == Some(keychain.id.as_str());
-        let keychain_id = keychain.id.clone();
-        let subtitle = secret_count_label(keychain.entries.len());
-
-        let mut row = div()
-            .id(SharedString::from(format!("keychain-{}", keychain.id)))
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .h(px(ROW_HEIGHT))
-            .px(px(12.))
-            .rounded(px(theme.corner_radius_small))
-            .text_color(theme.title);
-        if is_expanded {
-            // `--list-select` fill inside a `--border-accent` rule.
-            row = row
-                .bg(theme.card_c)
-                .border_1()
-                .border_color(theme.border_accent)
-                .hover(move |hover| hover.bg(over(theme.card_c, theme.hover)));
-        } else {
-            row = row.hover(move |hover| hover.bg(theme.hover));
+    /// Open the ChangeVault wizard for the selected vault.
+    fn open_wizard(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_none() {
+            return;
         }
-        row = row
-            .child(icon_tile(theme, "keys.svg"))
+        self.wizard_open = true;
+        cx.notify();
+    }
+
+    /// Close the ChangeVault wizard.
+    fn close_wizard(&mut self, cx: &mut Context<Self>) {
+        self.wizard_open = false;
+        cx.notify();
+    }
+
+    /// PORT-TODO: vault CRUD needs a `TermiusState::add_keychain`; until then
+    /// the create actions surface a status note.
+    fn new_vault_note(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.status_text =
+                "New vault — vault creation arrives with the storage/sync wave.".to_owned();
+            cx.notify();
+        });
+    }
+
+    /// PORT-TODO: moving credentials between vaults needs vault membership on
+    /// the records; until then "Continue" surfaces a status note.
+    fn submit_wizard(&mut self, cx: &mut Context<Self>) {
+        let mode = self.wizard_mode;
+        self.wizard_open = false;
+        self.state.update(cx, |state, cx| {
+            state.status_text = match mode {
+                ChangeVaultMode::NoCredentialsSharing => {
+                    "Credentials stay in personal vaults.".to_owned()
+                }
+                ChangeVaultMode::CredentialsSharing => {
+                    "Credentials move to the selected vault.".to_owned()
+                }
+                ChangeVaultMode::Multikey => {
+                    "Vault members use personal multikey passkeys.".to_owned()
+                }
+            };
+            cx.notify();
+        });
+    }
+
+    /// The selected vault's record, if it still exists.
+    fn selected_vault(&self, cx: &Context<Self>) -> Option<Keychain> {
+        let id = self.selected.as_deref()?;
+        self.state
+            .read(cx)
+            .library
+            .keychains
+            .iter()
+            .find(|vault| vault.id == id)
+            .cloned()
+    }
+
+    /// Per-type counts (PORT-TODO: library-wide — the model has no vault
+    /// membership).
+    fn vault_counts(&self, cx: &Context<Self>) -> VaultCounts {
+        let state = self.state.read(cx);
+        VaultCounts {
+            hosts: state.library.hosts.len(),
+            snippets: state.library.snippets.len(),
+            keys: state.library.keys.len(),
+            identities: state.library.identities.len(),
+            forwards: state.port_forwardings.len(),
+        }
+    }
+
+    /// The vault list (left pane): one [`EntityRow`] per vault.
+    fn vault_list(&self, theme: TermiusTheme, cx: &mut Context<Self>) -> Div {
+        let keychains = self.state.read(cx).library.keychains.clone();
+        let counts = self.vault_counts(cx);
+        let summary = vault_stats_summary(&counts);
+
+        if keychains.is_empty() {
+            return div()
+                .flex()
+                .flex_1()
+                .min_w(px(0.))
+                .items_center()
+                .justify_center()
+                .child(self.create_vault_form(theme, cx));
+        }
+
+        // PORT-TODO: no scroll handle yet (`overflow_y_scroll` needs one in
+        // some gpui layouts); long vault lists clip.
+        let mut list = div().flex().flex_col().flex_1().min_w(px(0.)).gap(px(2.)).p(px(8.));
+        for vault in &keychains {
+            let vault_id = vault.id.clone();
+            let is_selected = self.selected.as_deref() == Some(vault.id.as_str());
+            let icon_name = if is_selected { VAULT_ICON_SELECTED } else { VAULT_ICON };
+            // The stats reveal on selection (the original reveals on
+            // hover/selected via `--stats-opacity`).
+            let subtitle = if is_selected { summary.clone() } else { String::new() };
+            list = list.child(
+                EntityRow::new(vault_name(vault), subtitle, icon_name)
+                    .selected(is_selected)
+                    .on_click(
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.select_vault(&vault_id, cx);
+                        }),
+                    ),
+            );
+        }
+        list
+    }
+
+    /// The create-vault form shown when the vault set is empty
+    /// (`Vaults-ef2e0d94.js`: the Vaults screen renders the create form).
+    fn create_vault_form(&self, theme: TermiusTheme, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .w(px(420.))
+            .p(px(20.))
+            .rounded(px(theme.corner_radius_medium))
+            .bg(theme.card_a)
+            .child(
+                text::B14P
+                    .style(div())
+                    .text_color(theme.title)
+                    .child(SharedString::from("Create vault")),
+            )
+            .child(
+                InputField::new("Vault name", "")
+                    .placeholder("Enter vault name, e.g. Production...")
+                    .element(theme),
+            )
+            .child(
+                div().flex().justify_end().child(
+                    Button::new("Create vault").primary().on_click(
+                        theme,
+                        cx.listener(|this, _event, _window, cx| this.new_vault_note(cx)),
+                    ),
+                ),
+            )
+    }
+
+    /// The vault editor panel (right pane): name + per-type stats + the
+    /// Change-vault entry point.
+    fn vault_editor(&self, theme: TermiusTheme, cx: &mut Context<Self>) -> Div {
+        let vault = self.selected_vault(cx);
+        let counts = self.vault_counts(cx);
+        let name = vault
+            .as_ref()
+            .map(vault_name)
+            .unwrap_or_else(|| "Vault".to_owned());
+
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(EDITOR_WIDTH))
+            .gap(px(12.))
+            .p(px(16.))
+            .border_l_1()
+            .border_color(theme.border)
+            .child(
+                text::B16P
+                    .style(div())
+                    .text_color(theme.title)
+                    .child(SharedString::from("Vault details")),
+            )
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w(px(0.))
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon(VAULT_ICON).w(px(16.)).h(px(16.)).text_color(theme.title))
                     .child(
                         text::R14P
                             .style(div())
+                            .text_color(theme.title)
                             .truncate()
-                            .child(SharedString::from(keychain_label(keychain))),
-                    )
-                    .child(
-                        text::R12S
-                            .style(div())
-                            .text_color(theme.muted)
-                            .truncate()
-                            .child(SharedString::from(subtitle)),
+                            .child(SharedString::from(name)),
                     ),
-            )
-            .child(row_dots(theme, &keychain.id))
-            .on_click(cx.listener(move |this, _event, _window, cx| {
-                this.toggle_expanded(&keychain_id);
-                // An expansion change repaints through the state observer the
-                // shell attaches to `TermiusState`.
-                this.state.update(cx, |_state, cx| cx.notify());
-            }));
-        row
+            );
+
+        if counts.is_empty() {
+            panel = panel.child(
+                text::R12S
+                    .style(div())
+                    .text_color(theme.text_common)
+                    .child(SharedString::from("No items in this vault yet.")),
+            );
+        } else {
+            let mut stats = div().flex().flex_col().gap(px(6.));
+            stats = stats.child(stat_row(theme, "host.svg", counts.hosts, "hosts"));
+            stats = stats.child(stat_row(theme, "snippet.svg", counts.snippets, "snippets"));
+            stats = stats.child(stat_row(theme, "key.svg", counts.keys, "keys"));
+            stats = stats.child(stat_row(
+                theme,
+                "Identity.svg",
+                counts.identities,
+                "identities",
+            ));
+            stats = stats.child(stat_row(
+                theme,
+                "PortForwarding.svg",
+                counts.forwards,
+                "port forwarding rules",
+            ));
+            panel = panel.child(stats);
+        }
+
+        panel = panel.child(div().pt(px(4.)).child(ghost_button(
+            theme,
+            "vault-editor-change",
+            "Change vault…",
+            cx.listener(|this, _event, _window, cx| this.open_wizard(cx)),
+        )));
+        panel
     }
 
-    /// One secret entry under an expanded keychain: `Lock.svg` tile · owner id
-    /// over the mask. Indented; never reveals the secret.
-    fn entry_row(
-        theme: TermiusTheme,
-        keychain_id: &str,
-        index: usize,
-        owner_id: String,
-        mask: String,
-    ) -> Stateful<Div> {
-        div()
-            .id(SharedString::from(format!(
-                "keychain-{keychain_id}-entry-{index}"
-            )))
+    /// The ChangeVault wizard overlay ("Choose where to store credentials",
+    /// `ChangeVault-4b860408.js:540`).
+    fn wizard_overlay(&self, theme: TermiusTheme, cx: &mut Context<Self>) -> Div {
+        let target = self
+            .selected_vault(cx)
+            .as_ref()
+            .map(vault_name)
+            .unwrap_or_else(|| "this vault".to_owned());
+        let scrim = gpui::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.55 };
+
+        let mut options = div().flex().flex_col().gap(px(10.)).w_full();
+        for mode in ChangeVaultMode::ALL {
+            let selected = self.wizard_mode == mode;
+            options = options.child(radio_option(theme, mode, &target, selected, cx));
+        }
+
+        let subtitle = format!(
+            "Select how your teammates will access the items {} {}.",
+            change_vault_operation(),
+            target
+        );
+
+        let card = div()
+            .id("vault-wizard-card")
             .flex()
+            .flex_col()
             .items_center()
-            .gap(px(10.))
-            .h(px(ENTRY_HEIGHT))
-            .pl(px(ENTRY_INDENT))
-            .pr(px(12.))
-            .rounded(px(theme.corner_radius_small))
-            .child(icon_tile(theme, "Lock.svg"))
+            .gap(px(16.))
+            .w(px(WIZARD_WIDTH))
+            .p(px(40.))
+            .rounded(px(theme.corner_radius_large))
+            .bg(theme.card_a)
+            .text_color(theme.title)
+            .child(
+                div()
+                    .font_family(UI_FONT)
+                    .text_size(px(24.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.title)
+                    .child(SharedString::from("Choose where to store credentials")),
+            )
+            .child(
+                text::R14S
+                    .style(div())
+                    .text_color(theme.text_common)
+                    .child(SharedString::from(subtitle)),
+            )
+            .child(options)
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .child(
-                        text::R12P
-                            .style(div())
-                            .text_color(theme.title)
-                            .truncate()
-                            .child(SharedString::from(owner_id)),
-                    )
-                    .child(
-                        text::R12S
-                            .style(div())
-                            .text_color(theme.muted)
-                            .child(SharedString::from(mask)),
-                    ),
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .w_full()
+                    .pt(px(4.))
+                    .child(Button::new("Cancel").secondary().on_click(
+                        theme,
+                        cx.listener(|this, _event, _window, cx| this.close_wizard(cx)),
+                    ))
+                    .child(Button::new("Continue").primary().on_click(
+                        theme,
+                        cx.listener(|this, _event, _window, cx| this.submit_wizard(cx)),
+                    )),
+            )
+            // Swallow clicks on the card background so they never reach the
+            // scrim below (which dismisses the wizard).
+            .on_click(cx.listener(|_this, _event, _window, _cx| {}));
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(scrim)
+                    .id("vault-wizard-scrim")
+                    .on_click(cx.listener(|this, _event, _window, cx| this.close_wizard(cx))),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(card),
             )
     }
 }
@@ -316,87 +714,53 @@ impl KeychainScreen {
 impl Render for KeychainScreen {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme_of(cx);
-        let keychains = self.state.read(cx).library.keychains.clone();
 
-        // Toolbar: section title + the primary "New Keychain" action (with
-        // `addCircle.svg`), ported from the original keychain toolbar's
-        // "+ New key" button.
-        let toolbar = div()
+        // The primary action is the filter band's first child — no title band.
+        let actions = div()
             .flex()
             .items_center()
-            .justify_between()
-            .h(px(36.))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(SectionHeader::new("Keychain").element(theme))
-            .child(div().px(px(12.)).child(new_action_button(
+            .gap(px(10.))
+            .child(new_vault_button(
                 theme,
-                "keychain-new",
-                "New Keychain",
-                cx.listener(|this, _event, _window, cx| {
-                    // PORT-TODO: a naming dialog + keychain CRUD once
-                    // TermiusState grows `add_keychain`; note it meanwhile.
-                    this.state.update(cx, |state, cx| {
-                        state.status_text =
-                            "New Keychain — naming and secret storage arrive with the next wave."
-                                .to_owned();
-                        cx.notify();
-                    });
-                }),
-            )));
+                cx.listener(|this, _event, _window, cx| this.new_vault_note(cx)),
+            ))
+            .child(
+                Button::new("Change vault…")
+                    .ghost()
+                    .size(ButtonSize::Small)
+                    .disabled(self.selected.is_none())
+                    .on_click(
+                        theme,
+                        cx.listener(|this, _event, _window, cx| this.open_wizard(cx)),
+                    ),
+            );
+        let header = FiltersHeader::new("Search vaults").action(actions).element(theme);
 
-        let root = div()
+        let list = self.vault_list(theme, cx);
+        let mut body = div().flex().flex_1().min_h(px(0.)).child(list);
+        if self.selected.is_some() {
+            body = body.child(self.vault_editor(theme, cx));
+        }
+
+        let mut root = div()
             .flex()
             .flex_col()
             .size_full()
             .overflow_hidden()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .child(toolbar);
+            .child(header)
+            .child(body);
 
-        if keychains.is_empty() {
-            return root.child(
-                div().flex_1().min_h(px(0.)).overflow_hidden().child(
-                    EmptyState::new("No keychains", "Store passphrases securely…").element(theme),
-                ),
-            );
+        if self.wizard_open {
+            root = root.child(self.wizard_overlay(theme, cx));
         }
-
-        // PORT-TODO: the list does not scroll yet (same deal as host_list:
-        // `overflow_y_scroll` needs a scroll handle + scrollbar).
-        let mut list = div().flex().flex_col().gap(px(2.)).px(px(8.)).py(px(8.));
-        for keychain in &keychains {
-            let expanded = self.expanded.as_deref() == Some(keychain.id.as_str());
-            list = list.child(self.keychain_row(theme, keychain, cx));
-
-            if expanded {
-                let entries = entry_labels(keychain);
-                if entries.is_empty() {
-                    list = list.child(
-                        div().pl(px(ENTRY_INDENT)).child(
-                            SettingsText::new("No secrets stored in this keychain yet.")
-                                .element(theme),
-                        ),
-                    );
-                } else {
-                    for (index, (owner_id, mask)) in entries.into_iter().enumerate() {
-                        list = list.child(Self::entry_row(
-                            theme,
-                            &keychain.id,
-                            index,
-                            owner_id,
-                            mask,
-                        ));
-                    }
-                }
-            }
-        }
-        root.child(div().flex_1().min_h(px(0.)).overflow_hidden().child(list))
+        root
     }
 }
 
-/// The Keychain section screen, ready to drop into the shell's routed
-/// column (see the module docs for the call contract).
+/// The Vaults management screen, ready to drop into the shell's routed column
+/// (see the module docs for the call contract).
 pub fn keychain_screen(
     state: Entity<TermiusState>,
     cx: &mut Context<TermiusState>,
@@ -405,8 +769,8 @@ pub fn keychain_screen(
         .try_global::<KeychainScreenHost>()
         .and_then(|host| host.0.clone());
     if let Some(screen) = cached {
-        // Reuse the live view (it owns the expansion state) as long as it
-        // watches the same state entity. Reading it here is safe: only
+        // Reuse the live view (it owns the selection/wizard state) as long as
+        // it watches the same state entity. Reading it here is safe: only
         // `TermiusState` is leased at this point, never the screen itself.
         if screen.read(cx).state == state {
             return screen;
@@ -420,53 +784,79 @@ pub fn keychain_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use termius_core::keychain::KeychainEntry;
 
-    #[test]
-    fn row_labels_and_counts() {
-        assert_eq!(keychain_label(&Keychain::default()), "Untitled Keychain");
-        let mut titled = Keychain::default();
-        titled.title = " prod vault ".into();
-        assert_eq!(keychain_label(&titled), " prod vault ");
-
-        assert_eq!(secret_count_label(0), "0 secrets");
-        assert_eq!(secret_count_label(1), "1 secret");
-        assert_eq!(secret_count_label(7), "7 secrets");
-    }
-
-    #[test]
-    fn entry_summaries_never_expose_secrets() {
-        let keychain = Keychain {
-            entries: vec![
-                KeychainEntry {
-                    owner_id: "key-1".into(),
-                    secret: "hunter2".into(),
-                },
-                KeychainEntry {
-                    owner_id: "host-9".into(),
-                    secret: "hunter2".into(),
-                },
-            ],
+    fn vault(id: &str, title: &str) -> Keychain {
+        Keychain {
+            id: id.into(),
+            title: title.into(),
             ..Keychain::default()
-        };
-        let labels = entry_labels(&keychain);
-        assert_eq!(
-            labels,
-            vec![
-                ("key-1".to_owned(), SECRET_MASK.to_owned()),
-                ("host-9".to_owned(), SECRET_MASK.to_owned()),
-            ]
-        );
-        for (_, mask) in &labels {
-            assert_eq!(mask, SECRET_MASK);
         }
     }
 
     #[test]
-    fn row_icons_are_bundled() {
-        assert!(crate::has_icon("keys.svg"));
-        assert!(crate::has_icon("Lock.svg"));
-        assert!(crate::has_icon("addCircle.svg"));
-        assert!(crate::has_icon("dots.svg"));
+    fn vault_names_follow_get_vault_name() {
+        // The default / id-less vault gets the " vault" suffix.
+        assert_eq!(vault_name(&vault("", "Team")), "Team vault");
+        assert_eq!(vault_name(&vault("", "")), "Personal vault");
+        // A named vault keeps its name; unnamed named vaults are "Unnamed".
+        assert_eq!(vault_name(&vault("v1", "Production")), "Production");
+        assert_eq!(vault_name(&vault("v1", "  ")), "Unnamed");
+    }
+
+    #[test]
+    fn stats_summary_lists_per_type_counts() {
+        let counts = VaultCounts {
+            hosts: 3,
+            snippets: 1,
+            keys: 2,
+            identities: 0,
+            forwards: 4,
+        };
+        assert_eq!(
+            vault_stats_summary(&counts),
+            "3 hosts · 1 snippet · 2 keys · 4 rules"
+        );
+        assert_eq!(vault_stats_summary(&VaultCounts::default()), "Empty");
+        assert!(VaultCounts::default().is_empty());
+        assert!(!counts.is_empty());
+    }
+
+    #[test]
+    fn push_count_pluralises() {
+        let mut parts = Vec::new();
+        push_count(&mut parts, 0, "host", "hosts");
+        push_count(&mut parts, 1, "host", "hosts");
+        push_count(&mut parts, 2, "host", "hosts");
+        assert_eq!(parts, vec!["1 host".to_owned(), "2 hosts".to_owned()]);
+    }
+
+    #[test]
+    fn change_vault_modes_match_the_wizard() {
+        assert_eq!(ChangeVaultMode::ALL.len(), 3);
+        assert_eq!(
+            ChangeVaultMode::NoCredentialsSharing.label("Team vault"),
+            "Personal vault"
+        );
+        assert_eq!(
+            ChangeVaultMode::CredentialsSharing.label("Team vault"),
+            "Team vault"
+        );
+        assert_eq!(ChangeVaultMode::Multikey.label("Team vault"), "Multikey");
+        assert!(ChangeVaultMode::CredentialsSharing.body().contains("shared"));
+        assert_eq!(change_vault_operation(), "moving to");
+    }
+
+    #[test]
+    fn vault_and_stat_icons_are_bundled() {
+        assert!(crate::has_icon(VAULT_ICON));
+        assert!(crate::has_icon(VAULT_ICON_SELECTED));
+        assert!(crate::has_icon("host.svg"));
+        assert!(crate::has_icon("snippet.svg"));
+        assert!(crate::has_icon("key.svg"));
+        assert!(crate::has_icon("Identity.svg"));
+        assert!(crate::has_icon("PortForwarding.svg"));
+        assert!(crate::has_icon("plusThin.svg"));
+        assert!(crate::has_icon("checked.svg"));
+        assert!(crate::has_icon("unchecked.svg"));
     }
 }

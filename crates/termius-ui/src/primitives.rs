@@ -1721,8 +1721,8 @@ mod tests {
     #[test]
     fn new_primitives_round_trip_their_state() {
         assert!(NavItem::new("Hosts", "Hosts.svg", true).is_selected());
-        assert!(!NavItem::new("Logs", "Logs.svg", false).is_selected());
-        assert!(NavItem::new("Logs", "Logs.svg", false).selected(true).is_selected());
+        assert!(!NavItem::new("Logs", "session-log.svg", false).is_selected());
+        assert!(NavItem::new("Logs", "session-log.svg", false).selected(true).is_selected());
 
         assert!(EntityRow::new("web-1", "10.0.0.1", "Apple.svg").selected(true).is_selected());
         assert!(!EntityRow::new("web-1", "", "Apple.svg").is_selected());
