@@ -257,7 +257,7 @@ pub enum DialogIntent {
 /// window):
 /// * `Open` **replaces** the active dialog — dialogs never stack,
 /// * `Close` always clears — closing an already-closed host is a no-op.
-pub fn dialog_after(active: Option<Dialog>, intent: DialogIntent) -> Option<Dialog> {
+pub fn dialog_after(_active: Option<Dialog>, intent: DialogIntent) -> Option<Dialog> {
     match intent {
         DialogIntent::Open(dialog) => Some(dialog),
         DialogIntent::Close => None,

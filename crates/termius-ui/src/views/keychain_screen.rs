@@ -218,7 +218,7 @@ pub fn keychain_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use termius_core::KeychainEntry;
+    use termius_core::keychain::KeychainEntry;
 
     #[test]
     fn row_labels_and_counts() {

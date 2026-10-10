@@ -249,7 +249,7 @@ impl Render for SnippetsScreen {
                     .element(theme)
                     .flex_1()
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.open_dialog(Dialog::EditSnippet(open_id), cx);
+                        this.open_dialog(Dialog::EditSnippet(open_id.clone()), cx);
                     }));
 
                 // Small delete affordance beside the row (a sibling, not a child,
