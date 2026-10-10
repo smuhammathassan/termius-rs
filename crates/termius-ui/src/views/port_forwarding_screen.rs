@@ -63,7 +63,7 @@
 use std::collections::HashMap;
 
 use gpui::{
-    div, px, AnyElement, AppContext as _, Context, Div, Entity, EntityId, FontWeight,
+    div, px, AnyElement, AppContext as _, Context, Div, Entity, EntityId, FontWeight, Global,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, WeakEntity, Window,
 };

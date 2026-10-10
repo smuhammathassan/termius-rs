@@ -57,7 +57,8 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, Window,
 };
-use termius_core::{Host, HostType};
+use termius_core::host::HostType;
+use termius_core::Host;
 
 use crate::app_state::{Dialog, TermiusState};
 use crate::primitives::{Button, InputField, ShapedIcon};
