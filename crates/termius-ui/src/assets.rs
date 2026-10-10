@@ -60,7 +60,7 @@ pub fn load_fonts(cx: &App) {
 ///
 /// The icon inherits its colour from the parent's `text_color` (GPUI renders
 /// SVGs as a tinted alpha mask), so callers style it like text:
-/// `icon("lock.svg").w(px(16.)).h(px(16.)).text_color(theme.muted)`.
+/// `icon("Lock.svg").w(px(16.)).h(px(16.)).text_color(theme.muted)`.
 ///
 /// Unknown names render nothing (GPUI logs a lookup miss); use
 /// [`has_icon`] in tests / debug assertions.

@@ -74,7 +74,7 @@ impl Section {
             Self::Snippets => "snippet.svg",
             Self::Keys => "key.svg",
             Self::PortForwarding => "PortForwarding.svg",
-            Self::Sftp => "sftp.svg",
+            Self::Sftp => "Sftp.svg",
             Self::Keychain => "keys.svg",
             Self::Team => "team.svg",
             Self::Logs => "session-log.svg",
