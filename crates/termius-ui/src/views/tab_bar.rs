@@ -15,12 +15,13 @@
 
 use gpui::{
     div, px, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window,
 };
 
 use crate::app_state::{Dialog, SessionStatus, TermiusState};
 use crate::assets::icon;
 use crate::theme::{text, theme_of, TermiusTheme};
+use crate::views::app_shell::AppShell;
 
 use super::top_bar::{self, TAB_HEIGHT};
 
@@ -38,15 +39,31 @@ const STATUS_DOT_SIZE: f32 = 7.0;
 /// The tab strip view.
 pub struct TabBar {
     state: Entity<TermiusState>,
+    /// Weak handle back to the shell: selecting a tab routes `pane2` to the
+    /// terminal (the shell owns the active-view decision). `None` when the
+    /// strip is built standalone, in which case selection only touches state.
+    shell: Option<WeakEntity<AppShell>>,
 }
 
 impl TabBar {
     pub fn new(state: Entity<TermiusState>) -> Self {
-        Self { state }
+        Self { state, shell: None }
+    }
+
+    /// Attach the shell so a tab click can bring the terminal to `pane2`.
+    pub(crate) fn with_shell(mut self, shell: WeakEntity<AppShell>) -> Self {
+        self.shell = Some(shell);
+        self
     }
 
     fn select(&mut self, session_id: String, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| state.select_session(&session_id, cx));
+        // Even when the clicked tab is already the active session (so
+        // `select_session` is a no-op), the shell must switch back to the
+        // terminal from whatever screen is showing.
+        if let Some(shell) = self.shell.clone() {
+            let _ = shell.update(cx, |shell, cx| shell.show_terminal(cx));
+        }
     }
 
     fn close(&mut self, session_id: String, cx: &mut Context<Self>) {

@@ -15,15 +15,17 @@
 //! │   └── right cluster — update pill · bell · key · gear · person · team · theme
 //! ├── spacer (51px, normal flow)
 //! └── paneSplit (h = 100% - 51px)
-//!     ├── pane1  185px (⌘B; width 0 when a terminal is foreground) — the
-//!     │           vertical section nav ([`LeftPanel`]) + trial promo
-//!     └── pane2  flex-1 — the active screen (+ the terminal / SFTP panels)
+//!     ├── pane1  185px (⌘B; width 0 when the terminal is the active view) —
+//!     │           the vertical section nav ([`LeftPanel`]) + trial promo
+//!     └── pane2  flex-1 — exactly ONE of the active screen or the terminal
 //! ```
 //!
 //! The section navigation is the **left vertical list**, never a top bar: the
-//! top strip holds *connection/session* tabs, not sections. When a terminal
-//! session is foreground (or the SFTP section is routed) `pane1` collapses to
-//! width 0 and `pane2` takes the full width.
+//! top strip holds *connection/session* tabs, not sections. `pane2` shows a
+//! single [`Pane2View`] — the routed section's screen, or the terminal — and
+//! never stacks the host list beside the terminal. When the terminal is the
+//! active view (or the SFTP section is routed) `pane1` collapses to width 0 and
+//! `pane2` takes the full width (`isLeftPanelVisible`, `_main.js:112242`).
 
 use gpui::{
     actions, div, point, px, size, AnyElement, App, AppContext as _, Bounds, BorrowAppContext,
@@ -74,6 +76,22 @@ pub const TAB_BAR_HEIGHT: f32 = 40.0;
 /// calculation.
 pub const STATUS_BAR_HEIGHT: f32 = 26.0;
 
+/// The single view `pane2` renders.
+///
+/// The original shell has **one** `currentPath` that is either a base-tab
+/// screen id or a horizontal terminal-tab id (`uFe.render()`,
+/// `_main.js:112278`–`112301`); `GDe` swaps the routed screen while `jA` hosts
+/// the terminal pages, and only one is on screen at a time. `TermiusState` has
+/// no such field, so the shell derives this from `current_section` +
+/// `active_session` (see [`AppShell::reconcile_view`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pane2View {
+    /// The routed section's screen.
+    Screen(Section),
+    /// The active terminal session.
+    Terminal,
+}
+
 /// A sized flex slot around one routed section screen.
 ///
 /// The screen roots paint `size_full`, so they need a definite parent inside
@@ -89,7 +107,9 @@ fn screen_slot(screen: impl IntoElement) -> Div {
 /// hardcoding dark (see [`TermiusState`](crate::app_state::TermiusState)).
 pub fn init(cx: &mut App) {
     crate::assets::load_fonts(cx);
-    cx.set_global(TermiusTheme::dark());
+    // Follow the OS appearance (Termius' "System" default); the top-strip theme
+    // toggle still switches it at runtime.
+    cx.set_global(TermiusTheme::system(cx));
     cx.bind_keys([
         KeyBinding::new("cmd-b", ToggleSidebar, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
@@ -151,6 +171,12 @@ pub struct AppShell {
     account: Entity<AccountScreen>,
     team: Entity<TeamScreen>,
     keychain: Entity<KeychainScreen>,
+    /// Which single view `pane2` shows (derived, see [`Self::reconcile_view`]).
+    pane2_view: Pane2View,
+    /// Last routed section seen, to detect a nav-row click.
+    last_section: Section,
+    /// Last active session id seen, to detect a terminal-tab change.
+    last_active_session: Option<String>,
     /// Re-render whenever the state entity changes.
     _observe_state: Subscription,
     /// Re-render on theme switches.
@@ -162,7 +188,11 @@ impl AppShell {
         let state = cx.new(|cx| TermiusState::new(cx));
         let left_panel = cx.new(|cx| LeftPanel::new(state.clone(), cx));
         let host_list = cx.new(|cx| HostList::new(state.clone(), cx));
-        let tab_bar = cx.new(|_cx| TabBar::new(state.clone()));
+        // Hand the tab strip a weak handle back to the shell so selecting a
+        // session tab can route `pane2` to the terminal (`TabBar` only owns the
+        // state entity otherwise).
+        let shell = cx.weak_entity();
+        let tab_bar = cx.new(|_cx| TabBar::new(state.clone()).with_shell(shell));
         let terminal = cx.new(|cx| TerminalPane::new(state.clone(), cx));
         let sftp = cx.new(|_cx| SftpPanel::new(state.clone()));
 
@@ -178,7 +208,16 @@ impl AppShell {
         let team = state.update(cx, |_, cx| team_screen(state.clone(), cx));
         let keychain = state.update(cx, |_, cx| keychain_screen(state.clone(), cx));
 
-        let observe_state = cx.observe(&state, |_, _, cx| cx.notify());
+        // Seed the derived active view from the state's initial routing.
+        let (section, active) = {
+            let state = state.read(cx);
+            (state.current_section, state.active_session.clone())
+        };
+
+        let observe_state = cx.observe(&state, |this, _state, cx| {
+            this.reconcile_view(cx);
+            cx.notify();
+        });
         // gpui 0.2: `Context::observe_global` hands the observer the entity
         // plus its context (`FnMut(&mut V, &mut Context<V>)`).
         let observe_theme =
@@ -197,6 +236,9 @@ impl AppShell {
             account,
             team,
             keychain,
+            pane2_view: Pane2View::Screen(section),
+            last_section: section,
+            last_active_session: active,
             _observe_state: observe_state,
             _observe_theme: observe_theme,
         }
@@ -217,8 +259,47 @@ impl AppShell {
         }
     }
 
-    fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
+    /// Route the shell to a section **and** bring its screen to `pane2`.
+    ///
+    /// Unlike a bare [`TermiusState::set_section`], this always forces
+    /// [`Pane2View::Screen`] even when `section` is already current (so the
+    /// top-strip shortcut for the current section still leaves the terminal).
+    fn show_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.pane2_view = Pane2View::Screen(section);
+        self.last_section = section;
         self.state.update(cx, |state, cx| state.set_section(section, cx));
+        cx.notify();
+    }
+
+    /// Bring the terminal to `pane2` (the top-strip session tabs call this).
+    pub(crate) fn show_terminal(&mut self, cx: &mut Context<Self>) {
+        self.pane2_view = Pane2View::Terminal;
+        cx.notify();
+    }
+
+    /// Re-derive [`Pane2View`] from a [`TermiusState`] change.
+    ///
+    /// `TermiusState` has no explicit "active view" field, so the shell mirrors
+    /// the original's single `currentPath` here: a **section** change means a
+    /// nav row (or shortcut tab) was chosen, so show that screen; a **session**
+    /// change means a terminal tab became (or stopped being) the active tab, so
+    /// show the terminal.
+    fn reconcile_view(&mut self, cx: &mut Context<Self>) {
+        let (section, active) = {
+            let state = self.state.read(cx);
+            (state.current_section, state.active_session.clone())
+        };
+        if section != self.last_section {
+            self.pane2_view = Pane2View::Screen(section);
+        } else if active != self.last_active_session {
+            self.pane2_view = if active.is_some() {
+                Pane2View::Terminal
+            } else {
+                Pane2View::Screen(section)
+            };
+        }
+        self.last_section = section;
+        self.last_active_session = active;
     }
 
     fn close_dialog(&mut self, cx: &mut Context<Self>) {
@@ -258,7 +339,7 @@ impl AppShell {
             .pr(px(10.))
             .pt(px(11.))
             .pb(px(10.))
-            .bg(theme.sidebar_background)
+            .bg(theme.chrome_background())
             .text_color(theme.title)
             .border_b_1()
             .border_color(theme.border);
@@ -275,13 +356,13 @@ impl AppShell {
         strip = strip.child(
             top_bar::shortcut_tab(theme, "vault-tab", "Vault", "Vault.svg", current == Section::Hosts)
                 .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.set_section(Section::Hosts, cx)
+                    this.show_section(Section::Hosts, cx)
                 })),
         );
         strip = strip.child(
             top_bar::shortcut_tab(theme, "sftp-tab", "SFTP", "Sftp.svg", current == Section::Sftp)
                 .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.set_section(Section::Sftp, cx)
+                    this.show_section(Section::Sftp, cx)
                 })),
         );
 
@@ -330,25 +411,25 @@ impl AppShell {
         cluster = cluster.child(
             top_bar::icon_button(theme, "topbar-keys", "key.svg", current == Section::Keys)
                 .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.set_section(Section::Keys, cx)
+                    this.show_section(Section::Keys, cx)
                 })),
         );
         cluster = cluster.child(
             top_bar::icon_button(theme, "topbar-gear", "gear.svg", current == Section::Settings)
                 .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.set_section(Section::Settings, cx)
+                    this.show_section(Section::Settings, cx)
                 })),
         );
         cluster = cluster.child(
             top_bar::icon_button(theme, "topbar-account", "person.svg", current == Section::Account)
                 .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.set_section(Section::Account, cx)
+                    this.show_section(Section::Account, cx)
                 })),
         );
         cluster = cluster.child(
             top_bar::icon_button(theme, "topbar-team", "team.svg", current == Section::Team)
                 .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.set_section(Section::Team, cx)
+                    this.show_section(Section::Team, cx)
                 })),
         );
         cluster = cluster.child(
@@ -359,76 +440,35 @@ impl AppShell {
         cluster.into_any_element()
     }
 
-    // ----- pane 2 (the active screen) -------------------------------------
+    // ----- pane 2 (the single active view) --------------------------------
 
-    /// The active screen: the routed section's screen, plus the terminal / SFTP
-    /// panels where they belong (`GDe` + `jA` in the original).
+    /// The single active view (`GDe` **or** `jA`, never both).
     ///
-    /// * `Hosts` — the host list beside the terminal (unless a session is
-    ///   foreground, when the terminal takes the full width).
-    /// * `Sftp` — the terminal beside the SFTP browser.
-    /// * everything else — the section's screen, or an [`EmptyState`] stub.
-    fn pane2(
-        &self,
-        theme: TermiusTheme,
-        section: Section,
-        sftp: bool,
-        terminal_foreground: bool,
-    ) -> AnyElement {
-        let mut main = div().flex().flex_row().flex_1().min_w(px(0.)).min_h(px(0.));
-        match section {
-            Section::Hosts => {
-                if !terminal_foreground {
-                    main = main.child(
-                        div()
-                            .flex_none()
-                            .h_full()
-                            .w(px(HOST_LIST_WIDTH))
-                            .min_w(px(HOST_LIST_WIDTH))
-                            .border_r_1()
-                            .border_color(theme.border)
-                            .child(self.host_list.clone()),
-                    );
+    /// * [`Pane2View::Terminal`] — the active session's terminal, full width.
+    /// * [`Pane2View::Screen`] — that section's screen, full width: the host
+    ///   list for `Hosts`, the SFTP browser for `Sftp`, the section's screen
+    ///   entity otherwise (an [`EmptyState`] stub for `Logs`).
+    fn pane2(&self, theme: TermiusTheme, view: Pane2View) -> AnyElement {
+        match view {
+            Pane2View::Terminal => screen_slot(self.terminal.clone()).into_any_element(),
+            Pane2View::Screen(section) => match section {
+                Section::Hosts => screen_slot(self.host_list.clone()).into_any_element(),
+                Section::Sftp => screen_slot(self.sftp.clone()).into_any_element(),
+                Section::Snippets => screen_slot(self.snippets.clone()).into_any_element(),
+                Section::Keys => screen_slot(self.keys.clone()).into_any_element(),
+                Section::PortForwarding => {
+                    screen_slot(self.port_forwarding.clone()).into_any_element()
                 }
-                main = main.child(div().flex_1().min_w(px(0.)).child(self.terminal.clone()));
-                if sftp {
-                    main = main.child(
-                        div()
-                            .flex_none()
-                            .w(px(SFTP_WIDTH))
-                            .min_w(px(SFTP_WIDTH))
-                            .child(self.sftp.clone()),
-                    );
-                }
-            }
-            Section::Sftp => {
-                // The SFTP screen is the browser beside the live terminal
-                // (`TermiusState::set_section` opens the panel on entry).
-                main = main.child(div().flex_1().min_w(px(0.)).child(self.terminal.clone()));
-                main = main.child(
-                    div()
-                        .flex_none()
-                        .w(px(SFTP_WIDTH))
-                        .min_w(px(SFTP_WIDTH))
-                        .child(self.sftp.clone()),
-                );
-            }
-            Section::Snippets => main = main.child(screen_slot(self.snippets.clone())),
-            Section::Keys => main = main.child(screen_slot(self.keys.clone())),
-            Section::PortForwarding => {
-                main = main.child(screen_slot(self.port_forwarding.clone()))
-            }
-            Section::Keychain => main = main.child(screen_slot(self.keychain.clone())),
-            Section::Team => main = main.child(screen_slot(self.team.clone())),
-            Section::Settings => main = main.child(screen_slot(self.settings.clone())),
-            Section::Account => main = main.child(screen_slot(self.account.clone())),
-            Section::Logs => {
-                main = main.child(screen_slot(
+                Section::Keychain => screen_slot(self.keychain.clone()).into_any_element(),
+                Section::Team => screen_slot(self.team.clone()).into_any_element(),
+                Section::Settings => screen_slot(self.settings.clone()).into_any_element(),
+                Section::Account => screen_slot(self.account.clone()).into_any_element(),
+                Section::Logs => screen_slot(
                     EmptyState::new("Logs", "Session logs arrive with their screen.").element(theme),
-                ))
-            }
+                )
+                .into_any_element(),
+            },
         }
-        main.into_any_element()
     }
 
     // ----- dialog overlay -------------------------------------------------
@@ -554,26 +594,25 @@ impl AppShell {
 impl Render for AppShell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme_of(cx);
-        let (sidebar_visible, sftp, section, dialog, terminal_active) = {
+        let (sidebar_visible, section, dialog) = {
             let state = self.state.read(cx);
             (
                 state.sidebar_visible,
-                state.sftp_visible,
                 state.current_section,
                 state.active_dialog.clone(),
-                state.active_session.is_some(),
             )
         };
+        let view = self.pane2_view;
 
-        // `isLeftPanelVisible` (`_main.js:112242`): the rail collapses when a
-        // terminal tab is foreground, or the SFTP section is routed.
-        let terminal_foreground = terminal_active && section == Section::Hosts;
-        let rail_visible = sidebar_visible && !terminal_foreground && section != Section::Sftp;
+        // `isLeftPanelVisible` (`_main.js:112242`): the rail collapses when the
+        // terminal is the active view, or the SFTP section is routed.
+        let rail_visible = sidebar_visible
+            && matches!(view, Pane2View::Screen(section) if section != Section::Sftp);
 
         // The absolute top strip (paints above the spacer).
         let strip = self.top_strip(theme, section, cx);
 
-        // `paneSplit` — the 185px rail + the active screen.
+        // `paneSplit` — the 185px rail + the single active view.
         let mut split = div().flex().flex_row().flex_1().min_h(px(0.)).w_full();
         if rail_visible {
             split = split.child(
@@ -585,7 +624,7 @@ impl Render for AppShell {
                     .child(self.left_panel.clone()),
             );
         }
-        split = split.child(self.pane2(theme, section, sftp, terminal_foreground));
+        split = split.child(self.pane2(theme, view));
 
         let mut root = div()
             .id("app-shell")

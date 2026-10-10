@@ -1,78 +1,98 @@
-//! host_list — the Hosts panel: Quick-Connect bar, New-Entity toolbar, the
-//! two-section (Groups / Hosts) entity list, and the empty state.
+//! host_list — the **Home / "New Tab"** screen: the centred search field, the
+//! "Recent connections" card, and its rows.
 //!
-//! Rebuilt from `analysis/recon/10-hosts.md`. The routed screen is
-//! `ConnectedHostsList` (`MD`, `_main.js:66368`); its list is
-//! `FilteredVirtualizedHosts` → `VirtualizedHostsInternal`
-//! (`reconnectSaga:134471`), which **flattens** groups and hosts into two
-//! ordered `EntityLists` sections (`reconnectSaga:134645`) — it is *not* a
-//! nested DOM tree:
+//! Rebuilt from `analysis/recon/05-home.md`. The routed New-Tab body is `r_e`
+//! (`_main.js:87394`, styles `i_e` `_main.js:87444`): a `--entity-grid-background`
+//! root with `padding: 40px 20px` holding a `max-width: 720px`, `margin: 0 auto`
+//! column (`gap: 20px`) of
 //!
-//! * **Quick-Connect bar** (`p6e`, `_main.js:66018`) — the `ssh user@hostname`
-//!   input + Connect, sitting above the header (`div.quickConnectHotKeys`).
-//! * **Header** (`HostsFiltersHeader-fc79316f.js:423`) — the shared 45px
-//!   `--surface-high` band. Its **first child** is the New-Entity toolbar
-//!   (`r6e`, `_main.js:65858`): the split **New host** button (+ chevron menu:
-//!   New Group / Import / AWS / DigitalOcean / Azure), the **Terminal** and
-//!   **Serial** ghost buttons, then the responsive search / tags / sort cluster.
-//! * **List** — the group **breadcrumb** (`GroupPath`, `reconnectSaga:126512`)
-//!   then the flattened `Groups` and `Hosts` sections. Rows use the shared
-//!   [`EntityRow`] (40×40 `ShapedIcon` tile, 14px title over 11px subtitle,
-//!   trailing ⋯). Group rows carry the `"{n} Host(s)"` count
-//!   (`GroupPresenter.description`, `reconnectSaga:74206`) and **drill in** on
-//!   click (breadcrumb navigation, *not* inline collapse). Host rows select on
-//!   click and connect on double-click.
-//! * **Empty state** — the centred "Create hosts" card with the 60×60 gradient
-//!   icon wrapper (`EmptyScreenCard` / `IconWrapper`, `reconnectSaga:103728`).
+//! * **the search field** (`Nwe`, `_main.js:86591`) — a 36px `InputField`
+//!   (`--light-grey-4` / dark `--dark-grey-1`, 10px radius, placeholder
+//!   `"Search hosts or tabs"`, `--text-secondary`) with the ⌘K
+//!   command-palette hint right-aligned (`Hwe.shortcut`);
+//! * **the "Recent connections" card** (`Qwe`, `_main.js:87109`; shell `PF`
+//!   `_main.js:87012` / `$we` `86946`, styles `Uwe` `86980`) — a `--foreground`
+//!   card (15px padding, 20px radius, 10px gap) whose header is the 14/700
+//!   title plus the two `Button$1` `size="small"` actions **"Create a
+//!   workspace"** (`color:"regular"`) and **"Restore"** (`color:"accent"`),
+//!   and whose list is the `RF` rows (`_main.js:86712`, styles `j0` `86763`):
+//!   a 20×20 OS-coloured [`ShapedIcon`] tile (radius 6, white glyph), the 14px
+//!   label left (`kF`, `_main.js:86684`) and the 12px vault path right (`EF`,
+//!   `_main.js:86698`; `qwe`, `_main.js:87043`);
+//! * **the empty screen** (`Bwe`, `_main.js:86663`) when nothing is recent.
 //!
-//! The legacy [`build_tree`]/[`TreeRow`] DFS flatten is kept intact for
-//! compatibility (and its tests); the live list uses [`flatten_entities`] /
-//! [`ListRow`]. Keyboard navigation (↑/↓/Enter) walks host rows only, now over
-//! the flattened list.
+//! The OS tile keys off `HostPresenter.icon(host)` = `host.os_name || "unknown"`
+//! (`reconnectSaga:63048`) resolved through `systemsIcons` (`reconnectSaga:88730`)
+//! to a colour (`--system-ubuntu` orange, `--system-macos` blue, …) and a
+//! `ShapedIcon` (`reconnectSaga:88420`).
+//!
+//! # Legacy helpers (kept for compatibility)
+//!
+//! The file still carries the original Hosts-panel reconstruction: the DFS
+//! [`build_tree`] / [`TreeRow`] flatten, the two-section [`flatten_entities`] /
+//! [`ListRow`] model, the [`group_path`] breadcrumb and the keyboard helpers.
+//! They are no longer painted by [`HostList`] (the Hosts panel moved out of this
+//! screen) but stay exported and unit-tested.
 //!
 //! # PORT-TODOs
 //!
-//! * No text input exists in gpui 0.2.2, and `TermiusState` has no
-//!   search / quick-connect field, so the header search box and the
-//!   Quick-Connect field are display-only (the Connect button is therefore
-//!   disabled, matching the original's empty-address state).
-//! * The `Terminal` / `Serial` buttons connect to the first saved host of the
-//!   matching [`HostType`]; spawning a bare local / serial terminal has no
-//!   `TermiusState` API yet.
-//! * Host icons key off [`HostType`] because `termius_core::Host` has no
-//!   `os_name` field yet — see [`os_icon`].
+//! * The Home screen is the **full** `pane2` body in the original; `AppShell`
+//!   still mounts this view as the 300px Hosts sidebar column
+//!   (`app_shell.rs:386`), so the 720px centred column is squeezed until the
+//!   shell routes it full-width.
+//! * `termius_core::Host` has no `os_name`, so the tile keys off [`HostType`]
+//!   (Local → Apple, Serial → serial, else host); [`os_icon`] / [`os_color`] are
+//!   wired and ready for the field.
+//! * gpui 0.2.2 has no text input and `TermiusState` has no command palette, so
+//!   the search field is display-only (clicking it does nothing).
+//! * There is no connection-history or workspace-template API: "Recent
+//!   connections" is fed from `library.hosts` and "Create a workspace" only
+//!   clears the selection.
+//! * Selection is single-click (the frozen `TermiusState::select_host` is one
+//!   id); the original's ⌘-toggle / shift-range multi-select (`jwe`,
+//!   `_main.js:86890`) is not modelled.
 
 use std::collections::HashSet;
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, px, radians, ClickEvent, Context, Div, Entity,
-    FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
-    Render, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Transformation,
-    Window,
+    div, px, ClickEvent, Context, Div, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, Render, Rgba, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window,
 };
 use termius_core::host::HostType;
 use termius_core::{Group, Host};
 
-use crate::app_state::{Dialog, TermiusState};
-use crate::primitives::{Button, ButtonSize, EntityRow, FiltersHeader};
-use crate::theme::{over, text, theme_of, with_alpha, TermiusTheme, ThemeMode, UI_FONT};
+use crate::app_state::TermiusState;
+use crate::primitives::{Button, ButtonSize, EmptyState, ShapedIcon};
+use crate::theme::{text, theme_of, with_alpha, TermiusTheme, ThemeMode};
 
 // --- layout metrics (from the original CSS) --------------------------------
 
-/// The header band height (`HostsFiltersHeader` `height: 45px`).
-const HEADER_HEIGHT: f32 = 45.0;
-/// Quick-Connect bar: `padding: 8px` around a `36px` content row.
-const QUICK_CONNECT_HEIGHT: f32 = 52.0;
-/// `ButtonImpl.large` — the toolbar button height.
-const BUTTON_HEIGHT: f32 = 36.0;
-/// `ButtonImpl.medium` — the Terminal / Serial ghost buttons.
-const BUTTON_MEDIUM_HEIGHT: f32 = 30.0;
+/// `Hwe` + `InputField.medium` — the search field height (`36px`).
+const SEARCH_HEIGHT: f32 = 36.0;
+/// `i_e.contentWrapper` — the centred column width (`max-width: 720px`).
+const CONTENT_MAX_WIDTH: f32 = 720.0;
+/// `Uwe.card` — the section-card radius (`--corner-radius-large-increased`).
+const CARD_RADIUS: f32 = 20.0;
+/// `j0.icon` — the row tile size (`20px`).
+const ROW_TILE_SIZE: f32 = 20.0;
+/// `j0.icon` — the row tile radius (`--corner-radius-small-increased`).
+const ROW_TILE_RADIUS: f32 = 6.0;
+/// `j0.icon svg` — the glyph inside the tile (`max-width: 10px`, rounded up for
+/// legibility at the port's DPI).
+const ROW_TILE_GLYPH: f32 = 12.0;
+/// `j0.label` / `j0.descriptionText` — the row text column cap (`max-width:
+/// 310px`).
+const ROW_TEXT_MAX_WIDTH: f32 = 310.0;
 /// Cycle/depth guard for malformed group graphs.
 const MAX_DEPTH: usize = 16;
+/// The `commandPalette` shortcut shown at the right of the search field
+/// (`Nwe.shortcut`; `_main.js:86664`).
+const COMMAND_PALETTE_HINT: &str = "⌘+K";
 
-/// White, for text/glyphs on accent fills and the gradient stops.
-fn white() -> gpui::Rgba {
-    gpui::rgb(0xff_ff_ff)
+/// Fully transparent (an unselected, odd row fill).
+fn clear() -> Rgba {
+    Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
 }
 
 /// The click count of a gpui [`ClickEvent`] (keyboard activations count as 1).
@@ -81,6 +101,65 @@ fn click_count(event: &ClickEvent) -> usize {
         ClickEvent::Mouse(mouse) => mouse.up.click_count,
         ClickEvent::Keyboard(_) => 1,
     }
+}
+
+// --- resolved Home colours the theme has no token for ----------------------
+
+/// `--entity-grid-background`: `--main-bg` `#1d2033` (dark) / `#edf1f2` (light).
+fn entity_grid_bg(theme: TermiusTheme) -> Rgba {
+    match theme.mode {
+        ThemeMode::Dark => theme.background,
+        ThemeMode::Light => gpui::rgb(0xed_f1_f2),
+    }
+}
+
+/// `j0.item:nth-of-type(even)`: `--dark-grey-4` `#32364a` (dark) /
+/// `--entity-grid-background` `#edf1f2` (light).
+fn even_row_bg(theme: TermiusTheme) -> Rgba {
+    match theme.mode {
+        ThemeMode::Dark => theme.card_c,
+        ThemeMode::Light => entity_grid_bg(theme),
+    }
+}
+
+/// `j0.item:hover`: `--list-hover` `#3e4257` (dark) / `#e6ebed` (light).
+fn list_hover_fill(theme: TermiusTheme) -> Rgba {
+    match theme.mode {
+        ThemeMode::Dark => theme.border_strong,
+        ThemeMode::Light => theme.card_b,
+    }
+}
+
+/// `Hwe.inputField` fill: `--light-grey-4` `#d5dde0` (light) /
+/// `--dark-grey-1` `#141729` (dark).
+fn search_field_bg(theme: TermiusTheme) -> Rgba {
+    match theme.mode {
+        ThemeMode::Dark => theme.sidebar_background,
+        ThemeMode::Light => gpui::rgb(0xd5_dd_e0),
+    }
+}
+
+/// `Hwe.inputField` border: `--border-basic` (light) / `--dark-grey-5`
+/// `#3e4257` (dark).
+fn search_field_border(theme: TermiusTheme) -> Rgba {
+    match theme.mode {
+        ThemeMode::Dark => theme.border_strong,
+        ThemeMode::Light => theme.border_basic,
+    }
+}
+
+/// `--text-secondary`: `#8d91a5` (dark) / `#798c94` (light).
+fn text_secondary(theme: TermiusTheme) -> Rgba {
+    match theme.mode {
+        ThemeMode::Dark => gpui::rgb(0x8d_91_a5),
+        ThemeMode::Light => gpui::rgb(0x79_8c_94),
+    }
+}
+
+/// `--dark-blue-solid` `#004878` — the default [`ShapedIcon`] fill (used when a
+/// host has no OS colour).
+fn dark_blue_solid() -> Rgba {
+    gpui::rgb(0x00_48_78)
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +316,7 @@ pub(crate) fn next_host_row(rows: &[TreeRow], from: Option<usize>, dir: i32) -> 
 }
 
 // ---------------------------------------------------------------------------
-// Flattened two-section model (the live list)
+// Flattened two-section model (kept for compatibility with tests)
 // ---------------------------------------------------------------------------
 
 /// One row of the flattened Hosts list: the original's `Groups` / `Hosts`
@@ -360,7 +439,7 @@ pub fn next_host_in_list(rows: &[ListRow], from: Option<usize>, dir: i32) -> Opt
 ///
 /// PORT-TODO: `termius_core::Host` carries no `os_name` field yet, so nothing
 /// calls this at runtime; the mapping lives here so it is wired in one place
-/// once the field lands (see [`host_icon`]).
+/// once the field lands (see [`host_tile`]).
 pub fn os_icon(os_name: &str) -> &'static str {
     match os_name.trim().to_ascii_lowercase().as_str() {
         "apple" | "macos" | "mac" | "osx" | "darwin" => "Apple.svg",
@@ -371,19 +450,69 @@ pub fn os_icon(os_name: &str) -> &'static str {
     }
 }
 
-/// The bundled icon for a host row.
+/// The tile colour for a Termius `os_name` (`systemsIcons`, `reconnectSaga:88730`).
+///
+/// Values are the `--system-*` vars from `analysis/termius-theme.json`; `None`
+/// for unknown platforms (the caller falls back to [`dark_blue_solid`]).
+///
+/// PORT-TODO: unused until `termius_core::Host::os_name` lands (see [`host_tile`]).
+pub fn os_color(os_name: &str) -> Option<Rgba> {
+    let color = match os_name.trim().to_ascii_lowercase().as_str() {
+        "apple" | "mac" | "osx" | "darwin" => gpui::rgb(0x17_17_19), // --system-apple
+        "macos" => gpui::rgb(0x49_a3_f2),                            // --system-macos
+        "windows" | "win" | "windows10" | "windows11" => gpui::rgb(0x00_a1_f1), // --system-windows
+        "ubuntu" => gpui::rgb(0xe9_54_20),                           // --system-ubuntu
+        "debian" => gpui::rgb(0xce_00_56),
+        "centos" => gpui::rgb(0xef_a7_20),
+        "fedora" => gpui::rgb(0x3c_6e_b4),
+        "arch" => gpui::rgb(0x17_93_d1),
+        "redhat" => gpui::rgb(0xee_00_00),
+        "linux" => gpui::rgb(0xff_cc_33),                            // --system-linux
+        "localhost" | "local" => gpui::rgb(0x21_b5_68),              // --green
+        _ => return None,
+    };
+    Some(color)
+}
+
+/// The bundled icon for a host row (legacy Hosts-panel presenter).
 ///
 /// PORT-TODO: the original keys this off the host's `os_name` (`HostPresenter
-/// .icon` → `Apple` / `Windows` / `linux` / `ubuntu`…, `reconnectSaga:63048`),
-/// which the local [`Host`] model does not carry yet; fall back to the
-/// transport [`HostType`] so every row still renders a real SVG instead of a
-/// placeholder. Replace with [`os_icon`] when `Host::os_name` lands.
+/// .icon`, `reconnectSaga:63048`), which the local [`Host`] model does not
+/// carry yet; fall back to the transport [`HostType`]. Replaced on the Home
+/// screen by [`host_tile`].
+#[allow(dead_code)]
 fn host_icon(host: &Host) -> &'static str {
     match host.host_type {
         HostType::Local => "Apple.svg",
         HostType::Serial => "serial.svg",
         HostType::Mosh => "mosh.svg",
         HostType::Ssh | HostType::Telnet => "host.svg",
+    }
+}
+
+/// The `(glyph, tile colour)` for a Home row (`EntityIcon`, `reconnectSaga:88914`).
+///
+/// PORT-TODO: `termius_core::Host` has no `os_name`, so the OS split is not
+/// reproducible; key off [`HostType`] instead (Local → Apple, Serial → serial,
+/// else host) with the OS colours [`os_color`] resolves.
+fn host_tile(host: &Host) -> (&'static str, Rgba) {
+    match host.host_type {
+        HostType::Local => ("Apple.svg", os_color("osx").unwrap_or_else(dark_blue_solid)),
+        HostType::Serial => ("serial.svg", dark_blue_solid()),
+        HostType::Mosh => ("mosh.svg", dark_blue_solid()),
+        HostType::Ssh | HostType::Telnet => ("host.svg", dark_blue_solid()),
+    }
+}
+
+/// `HostPresenter.label(host)` = `host.label || host.address || ""`
+/// (`reconnectSaga:63039`).
+fn host_label(host: &Host) -> String {
+    if !host.label.trim().is_empty() {
+        host.label.clone()
+    } else if !host.hostname.trim().is_empty() {
+        host.hostname.clone()
+    } else {
+        String::new()
     }
 }
 
@@ -402,278 +531,190 @@ fn host_subtitle(host: &Host) -> String {
     }
 }
 
+/// The right-aligned vault path of a Home row (`qwe`, `_main.js:87043`):
+/// `"Personal"` (+ the first group's title) for a personal host.
+///
+/// PORT-TODO: `termius_core::Host` has no vault / `is_shared`, and groups are
+/// referenced by id (not a single nested `host.group`), so the shared-vault
+/// prefix and the full group breadcrumb are approximated by the first group.
+fn vault_label(host: &Host, groups: &[Group]) -> String {
+    let mut label = String::from("Personal");
+    if let Some(group) = host
+        .group_ids
+        .iter()
+        .find_map(|id| groups.iter().find(|group| group.id == *id))
+    {
+        label.push_str(" / ");
+        label.push_str(&group.title);
+    }
+    label
+}
+
 /// `GroupPresenter.description`: `"{n} Host"` / `"{n} Hosts"`
 /// (`reconnectSaga:74206`).
+#[allow(dead_code)]
 fn group_subtitle(host_count: usize) -> String {
     format!("{host_count} Host{}", if host_count == 1 { "" } else { "s" })
+}
+
+// ---------------------------------------------------------------------------
+// The Home list model
+// ---------------------------------------------------------------------------
+
+/// One "Recent connections" row (`RF`, `_main.js:86712`).
+struct RecentRow {
+    id: String,
+    label: String,
+    vault: String,
+    icon: &'static str,
+    color: Rgba,
+}
+
+/// The Home rows: every saved host (the original uses the recent-connections
+/// history, `Xwe` `_main.js:87153`), sorted by label.
+///
+/// PORT-TODO: no connection-history API — feed from `library.hosts`.
+fn recent_rows(hosts: &[Host], groups: &[Group]) -> Vec<RecentRow> {
+    let mut rows: Vec<RecentRow> = hosts
+        .iter()
+        .map(|host| {
+            let (icon, color) = host_tile(host);
+            RecentRow {
+                id: host.id.clone(),
+                label: host_label(host),
+                vault: vault_label(host, groups),
+                icon,
+                color,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| a.label.cmp(&b.label));
+    rows
 }
 
 // ---------------------------------------------------------------------------
 // Small chrome builders
 // ---------------------------------------------------------------------------
 
-/// The `Groups` / `Hosts` section title
-/// (`reconnectSaga:134728`: `font-weight:700; padding:30px 30px 9px`).
-fn section_title(theme: TermiusTheme, title: &'static str) -> Div {
+/// The centred search field (`Nwe`, `_main.js:86591`; styles `Hwe` `86635`).
+///
+/// PORT-TODO: display-only — gpui 0.2.2 has no text input and `TermiusState`
+/// has no command palette, so clicking it cannot open the palette
+/// (`commandPaletteOpenedVia: "New Tab Empty State Search Field"`).
+fn search_bar(theme: TermiusTheme) -> Div {
     div()
-        .px(px(30.))
-        .pt(px(30.))
-        .pb(px(9.))
-        .font_family(UI_FONT).text_size(px(14.))
-        .font_weight(FontWeight::BOLD)
-        .line_height(px(18.))
-        .whitespace_nowrap()
-        .text_color(theme.title)
-        .child(SharedString::from(title))
-}
-
-/// The accent "New host" split-button segment (plus glyph + label).
-fn primary_segment(theme: TermiusTheme, id: &'static str) -> Stateful<Div> {
-    let hover = over(theme.primary, with_alpha(white(), 0.25));
-    div()
-        .id(SharedString::from(id))
+        .w_full()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .h(px(BUTTON_HEIGHT))
-        .pl(px(12.))
-        .pr(px(10.))
-        .rounded_l(px(theme.corner_radius_medium))
-        .bg(theme.primary)
-        .text_color(white())
-        .font_family(UI_FONT).text_size(px(14.))
-        .font_weight(FontWeight::MEDIUM)
-        .line_height(px(21.))
-        .whitespace_nowrap()
-        .child(crate::icon("plusThin.svg").w(px(14.)).h(px(14.)).text_color(white()))
-        .child(SharedString::from("New host"))
-        .hover(move |style| style.bg(hover))
-}
-
-/// The split button's chevron segment.
-fn chevron_segment(theme: TermiusTheme, id: &'static str, open: bool) -> Stateful<Div> {
-    let hover = over(theme.primary, with_alpha(white(), 0.25));
-    let fill = if open { hover } else { theme.primary };
-    div()
-        .id(SharedString::from(id))
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(BUTTON_HEIGHT))
-        .w(px(30.))
-        .rounded_r(px(theme.corner_radius_medium))
-        .bg(fill)
-        .text_color(white())
-        .child(crate::icon("chevron.svg").w(px(12.)).h(px(12.)).text_color(white()))
-        .hover(move |style| style.bg(hover))
-}
-
-/// A `ButtonImpl.medium` ghost button with a leading glyph (Terminal / Serial).
-fn ghost_icon_button(
-    theme: TermiusTheme,
-    id: &'static str,
-    icon_name: &'static str,
-    label: &'static str,
-) -> Stateful<Div> {
-    div()
-        .id(SharedString::from(id))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .h(px(BUTTON_MEDIUM_HEIGHT))
+        .h(px(SEARCH_HEIGHT))
         .px(px(10.))
-        .rounded(px(theme.corner_radius_small))
-        .text_color(theme.title)
-        .font_family(UI_FONT).text_size(px(14.))
-        .font_weight(FontWeight::MEDIUM)
-        .line_height(px(21.))
-        .whitespace_nowrap()
-        .child(crate::icon(icon_name).w(px(14.)).h(px(14.)).text_color(theme.title))
-        .child(SharedString::from(label))
-        .hover(move |style| style.bg(theme.hover))
-}
-
-/// The small "Pro" tag the integration menu items carry (`upgrade:!isPro`).
-fn pro_badge(theme: TermiusTheme) -> Div {
-    div()
-        .px(px(6.))
-        .py(px(1.))
-        .rounded(px(4.))
-        .bg(with_alpha(theme.primary, 0.15))
-        .text_color(theme.primary)
-        .font_family(UI_FONT).text_size(px(10.))
-        .font_weight(FontWeight::BOLD)
-        .line_height(px(13.))
-        .child(SharedString::from("Pro"))
-}
-
-/// One row of the split button's dropdown menu.
-fn menu_item(
-    theme: TermiusTheme,
-    id: &'static str,
-    icon_name: &'static str,
-    label: &'static str,
-    upgrade: bool,
-) -> Stateful<Div> {
-    let mut row = div()
-        .id(SharedString::from(id))
-        .flex()
-        .items_center()
-        .gap(px(10.))
-        .h(px(34.))
-        .px(px(12.))
-        .rounded(px(theme.corner_radius_small))
-        .text_color(theme.title)
-        .child(crate::icon(icon_name).w(px(16.)).h(px(16.)).text_color(theme.muted))
+        .rounded(px(theme.corner_radius_medium))
+        .border_1()
+        .border_color(search_field_border(theme))
+        .bg(search_field_bg(theme))
         .child(
-            text::R14P
+            text::R14S
                 .style(div())
                 .flex_grow()
                 .min_w(px(0.))
                 .truncate()
-                .child(SharedString::from(label)),
+                .text_color(text_secondary(theme))
+                .child(SharedString::from("Search hosts or tabs")),
         )
-        .hover(move |style| style.bg(theme.card_c));
-    if upgrade {
-        row = row.child(pro_badge(theme));
-    }
-    row
+        .child(
+            text::R14S
+                .style(div())
+                .flex_shrink_0()
+                .min_w(px(31.))
+                .mx(px(5.))
+                .text_color(text_secondary(theme))
+                .child(SharedString::from(COMMAND_PALETTE_HINT)),
+        )
 }
 
-/// The 60×60 gradient `IconWrapper` of the empty-screen card
-/// (`reconnectSaga:103707`: `linear-gradient(135deg, --dark-grey-*-a15, --white-a15)`).
-fn empty_icon(theme: TermiusTheme) -> Div {
-    let from = match theme.mode {
-        ThemeMode::Dark => theme.card_b,
-        ThemeMode::Light => theme.card_c,
-    };
+/// One "Recent connections" row (`RF`, `_main.js:86712`; styles `j0` `86763`).
+///
+/// `even` toggles the `:nth-of-type(even)` fill; `selected` paints the
+/// `--border-accent` rule + `--button-hover-overlay-accent` fill.
+fn recent_row(theme: TermiusTheme, row: &RecentRow, selected: bool, even: bool) -> Stateful<Div> {
+    let base = if even { even_row_bg(theme) } else { clear() };
+    let fill = if selected { with_alpha(theme.primary, 0.25) } else { base };
+    let border = if selected { theme.border_accent } else { clear() };
+    let hover = list_hover_fill(theme);
+
+    let tile = ShapedIcon::new(row.icon)
+        .size(ROW_TILE_SIZE)
+        .glyph_size(ROW_TILE_GLYPH)
+        .corner_radius(ROW_TILE_RADIUS)
+        .background(row.color)
+        .element(theme)
+        .mr(px(10.));
+
     div()
+        .id(SharedString::from(format!("recent-{}", row.id)))
         .flex()
         .items_center()
-        .justify_center()
-        .size(px(60.))
-        .flex_shrink_0()
-        .rounded(px(16.))
+        .gap(px(20.))
+        .justify_between()
+        .w_full()
+        .p(px(10.))
+        .rounded(px(theme.corner_radius_medium))
         .border_1()
-        .border_color(with_alpha(white(), 0.05))
-        .bg(linear_gradient(
-            135.0,
-            linear_color_stop(with_alpha(from, 0.15), 0.0),
-            linear_color_stop(with_alpha(white(), 0.15), 1.0),
-        ))
-        .text_color(theme.title)
-        .child(crate::icon("host.svg").w(px(20.)).h(px(20.)))
-}
-
-/// `DefaultEmptyHostsScreen` (`reconnectSaga:126536`): the centred "Create
-/// hosts" card.
-fn empty_hosts_card(theme: TermiusTheme) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .flex_1()
-        .min_h(px(0.))
-        .w_full()
+        .border_color(border)
+        .bg(fill)
+        .overflow_hidden()
         .text_color(theme.title)
         .child(
             div()
                 .flex()
-                .flex_col()
                 .items_center()
-                .gap(px(30.))
-                .px(px(20.))
-                .child(empty_icon(theme))
-                .child(
-                    div()
-                        .font_family(UI_FONT).text_size(px(16.))
-                        .font_weight(FontWeight(500.0))
-                        .line_height(px(21.))
-                        .child(SharedString::from("Create hosts")),
-                )
-                .child(
-                    div()
-                        .max_w(px(300.))
-                        .text_center()
-                        .font_family(UI_FONT).text_size(px(14.))
-                        .font_weight(FontWeight(450.0))
-                        .line_height(px(21.))
-                        .text_color(theme.text_common)
-                        .child(SharedString::from(
-                            "Save your connection details as hosts to connect in one click.",
-                        )),
-                ),
-        )
-}
-
-/// The Quick-Connect bar (`p6e`, `_main.js:66018`): a `ssh user@hostname`
-/// field + Connect, above the header.
-fn quick_connect_bar(theme: TermiusTheme) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .w_full()
-        .flex_shrink_0()
-        .p(px(8.))
-        .h(px(QUICK_CONNECT_HEIGHT))
-        .bg(theme.card_a)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .flex_1()
+                .flex_grow()
                 .min_w(px(0.))
-                .h(px(36.))
-                .pr(px(7.))
-                .rounded(px(theme.corner_radius_medium))
-                .border_1()
-                .border_color(theme.border_light)
-                .bg(theme.card_b)
-                // PORT-TODO: display-only — gpui 0.2.2 has no text input and
-                // `TermiusState` has no quick-connect field.
+                .child(tile)
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .h_full()
-                        .px(px(10.))
+                    text::R14P
+                        .style(div())
                         .truncate()
-                        .text_color(theme.text_common)
-                        .font_family(UI_FONT).text_size(px(14.))
-                        .font_weight(FontWeight(450.0))
-                        .line_height(px(21.))
-                        .child(SharedString::from(
-                            "Type \"ssh user@hostname -p port\" to connect...",
-                        )),
-                )
-                .child(
-                    Button::new("Connect")
-                        .primary()
-                        .size(ButtonSize::Small)
-                        // The address is empty, so the original disables it.
-                        .disabled(true)
-                        .element(theme),
+                        .max_w(px(ROW_TEXT_MAX_WIDTH))
+                        .text_color(theme.title)
+                        .child(SharedString::from(row.label.clone())),
                 ),
         )
+        .child(
+            text::R12S
+                .style(div())
+                .flex_shrink_0()
+                .truncate()
+                .max_w(px(ROW_TEXT_MAX_WIDTH))
+                .text_right()
+                .text_color(text_secondary(theme))
+                .child(SharedString::from(row.vault.clone())),
+        )
+        .hover(move |style| style.bg(hover))
+}
+
+/// A muted status line (loading / library error).
+fn status_line(theme: TermiusTheme, message: &str, danger: bool) -> Div {
+    let color = if danger { theme.danger } else { text_secondary(theme) };
+    text::R12S
+        .style(div())
+        .px(px(4.))
+        .text_color(color)
+        .child(SharedString::from(message.to_owned()))
 }
 
 // ---------------------------------------------------------------------------
 // The view
 // ---------------------------------------------------------------------------
 
-/// The Hosts panel view.
+/// The Home / "New Tab" screen view.
 pub struct HostList {
     state: Entity<TermiusState>,
     focus: FocusHandle,
-    /// Row cursor for keyboard navigation (index into the flattened rows).
-    cursor: Option<usize>,
-    /// Group currently drilled into (breadcrumb); `None` = "All hosts".
-    current_group: Option<String>,
-    /// Whether the split "New host" dropdown menu is open.
-    new_menu_open: bool,
+    /// Ids of the recent-connection rows currently selected; the two card
+    /// buttons act on this set. The original's ⌘-toggle / shift-range
+    /// multi-select (`jwe`, `_main.js:86890`) is PORT-TODO.
+    selection: HashSet<String>,
 }
 
 impl HostList {
@@ -681,9 +722,7 @@ impl HostList {
         Self {
             state,
             focus: cx.focus_handle(),
-            cursor: None,
-            current_group: None,
-            new_menu_open: false,
+            selection: HashSet::new(),
         }
     }
 
@@ -695,85 +734,77 @@ impl HostList {
         self.focus.focus(window);
     }
 
-    /// The rows currently painted for the drilled-in group.
-    fn current_rows(&self, cx: &gpui::App) -> Vec<ListRow> {
-        let state = self.state.read(cx);
-        flatten_entities(
-            &state.library.groups,
-            &state.library.hosts,
-            self.current_group.as_deref(),
-        )
-    }
+    // ----- selection ------------------------------------------------------
 
-    // ----- navigation -----------------------------------------------------
-
-    /// Drill into `group_id` (or back to the root with `None`).
-    fn navigate_to(&mut self, group_id: Option<String>, cx: &mut Context<Self>) {
-        self.current_group = group_id;
-        self.cursor = None;
-        self.new_menu_open = false;
+    /// Select one recent row (single-click; the frozen `select_host` is one id).
+    fn select_row(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.selection.clear();
+        self.selection.insert(id.to_owned());
+        self.state
+            .update(cx, |state, cx| state.select_host(Some(id.to_owned()), cx));
         cx.notify();
     }
 
-    fn open_group(&mut self, group_id: &str, cx: &mut Context<Self>) {
-        self.navigate_to(Some(group_id.to_owned()), cx);
-    }
-
-    fn toggle_new_menu(&mut self, cx: &mut Context<Self>) {
-        self.new_menu_open = !self.new_menu_open;
+    /// Restore one connection (double-click / Enter).
+    fn open_host(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.selection.clear();
+        self.selection.insert(id.to_owned());
+        self.state
+            .update(cx, |state, cx| state.open_connection(id, cx));
         cx.notify();
     }
 
-    fn close_new_menu(&mut self, cx: &mut Context<Self>) {
-        if self.new_menu_open {
-            self.new_menu_open = false;
-            cx.notify();
+    /// Restore every selected connection (`restoreConnections`, `_main.js:87076`).
+    fn restore_selected(&mut self, cx: &mut Context<Self>) {
+        if self.selection.is_empty() {
+            return;
         }
+        let ids: Vec<String> = self.selection.iter().cloned().collect();
+        self.state.update(cx, |state, cx| {
+            for id in &ids {
+                state.open_connection(id, cx);
+            }
+        });
     }
 
-    /// `New host` → the Add-Host dialog (`onAddHost`, `_main.js:65858`).
-    fn open_new_host(&mut self, cx: &mut Context<Self>) {
-        self.new_menu_open = false;
-        self.state.update(cx, |state, cx| state.open_dialog(Dialog::AddHost, cx));
-        cx.notify();
-    }
-
-    /// Terminal / Serial: connect to the first saved host of `host_type`.
+    /// "Create a workspace" (`createWorkspace`, `_main.js:87086`).
     ///
-    /// PORT-TODO: a bare local / serial terminal (not tied to a saved host) has
-    /// no `TermiusState` API yet.
-    fn open_first_host_of_type(&mut self, host_type: HostType, cx: &mut Context<Self>) {
-        let target = self
-            .state
-            .read(cx)
-            .library
-            .hosts
-            .iter()
-            .find(|host| host.host_type == host_type)
-            .map(|host| host.id.clone());
-        if let Some(id) = target {
-            self.state.update(cx, |state, cx| state.open_connection(&id, cx));
-        }
+    /// PORT-TODO: `TermiusState` has no workspace-template API; the original
+    /// builds a `WorkspaceTemplate` from the selected connections and opens the
+    /// create-workspace flow. For now this just resets the selection.
+    fn create_workspace(&mut self, cx: &mut Context<Self>) {
+        self.selection.clear();
+        cx.notify();
     }
 
-    fn move_cursor(&mut self, dir: i32, cx: &mut Context<Self>) {
-        let rows = self.current_rows(cx);
-        let Some(index) = next_host_in_list(&rows, self.cursor, dir) else { return };
-        self.cursor = Some(index);
-        let host_id = match rows.get(index) {
-            Some(ListRow::Host { id, .. }) => Some(id.clone()),
-            _ => None,
+    // ----- keyboard -------------------------------------------------------
+
+    /// Move the selection `dir` rows (`+1` down, `-1` up) through the recent
+    /// list.
+    fn move_selection(&mut self, dir: i32, cx: &mut Context<Self>) {
+        let ids: Vec<String> = {
+            let state = self.state.read(cx);
+            recent_rows(&state.library.hosts, &state.library.groups)
+                .into_iter()
+                .map(|row| row.id)
+                .collect()
         };
-        if host_id.is_some() {
-            self.state.update(cx, |state, cx| state.select_host(host_id, cx));
+        if ids.is_empty() {
+            return;
         }
-    }
-
-    fn connect_selected(&mut self, cx: &mut Context<Self>) {
-        let Some(host_id) = self.state.read(cx).selected_host.clone() else { return };
-        self.state.update(cx, |state, cx| state.open_connection(&host_id, cx));
-        // PORT-TODO(gpui 0.2): hand keyboard focus to the terminal pane once
-        // the session opens (needs a Window; today the user clicks the pane).
+        let next = match ids.iter().position(|id| self.selection.contains(id)) {
+            Some(index) => {
+                let candidate = index as i32 + dir;
+                if candidate < 0 || candidate as usize >= ids.len() {
+                    return;
+                }
+                candidate as usize
+            }
+            None if dir >= 0 => 0,
+            None => ids.len() - 1,
+        };
+        let id = ids[next].clone();
+        self.select_row(&id, cx);
     }
 
     fn handle_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -781,16 +812,16 @@ impl HostList {
             return;
         }
         match event.keystroke.key.as_str() {
-            "down" => self.move_cursor(1, cx),
-            "up" => self.move_cursor(-1, cx),
-            "enter" => self.connect_selected(cx),
+            "down" => self.move_selection(1, cx),
+            "up" => self.move_selection(-1, cx),
+            "enter" => self.restore_selected(cx),
             "home" => {
-                self.cursor = None;
-                self.move_cursor(1, cx);
+                self.selection.clear();
+                self.move_selection(1, cx);
             }
             "end" => {
-                self.cursor = None;
-                self.move_cursor(-1, cx);
+                self.selection.clear();
+                self.move_selection(-1, cx);
             }
             _ => {}
         }
@@ -798,168 +829,86 @@ impl HostList {
 
     // ----- chrome ---------------------------------------------------------
 
-    /// The New-Entity toolbar (`r6e`, `_main.js:65858`) — the header's first
-    /// child: the split "New host" button, Terminal and Serial.
-    fn toolbar(&self, theme: TermiusTheme, menu_open: bool, cx: &mut Context<Self>) -> Div {
-        let split = div()
+    /// The "Recent connections" card (`PF` / `$we`, `_main.js:86946`).
+    fn recent_card(
+        &self,
+        theme: TermiusTheme,
+        rows: &[RecentRow],
+        has_selection: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mut list = div().flex().flex_col().gap(px(5.)).w_full();
+        for (index, row) in rows.iter().enumerate() {
+            let selected = self.selection.contains(&row.id);
+            let host_id = row.id.clone();
+            list = list.child(recent_row(theme, row, selected, index % 2 == 1).on_click(
+                cx.listener(move |this, event: &ClickEvent, _window, cx| {
+                    if click_count(event) >= 2 {
+                        this.open_host(&host_id, cx);
+                    } else {
+                        this.select_row(&host_id, cx);
+                    }
+                }),
+            ));
+        }
+
+        let header = div()
             .flex()
+            .flex_wrap()
             .items_center()
-            .flex_shrink_0()
+            .gap(px(10.))
+            .w_full()
             .child(
-                primary_segment(theme, "hosts-new-host")
-                    .on_click(cx.listener(|this, _event, _window, cx| this.open_new_host(cx))),
+                text::B14P
+                    .style(div())
+                    .flex_grow()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_color(theme.title)
+                    .child(SharedString::from("Recent connections")),
             )
             .child(
                 div()
-                    .w(px(1.))
-                    .h(px(BUTTON_HEIGHT))
-                    .bg(with_alpha(white(), 0.15)),
-            )
-            .child(chevron_segment(theme, "hosts-new-host-menu", menu_open).on_click(
-                cx.listener(|this, _event, _window, cx| this.toggle_new_menu(cx)),
-            ));
-
-        let terminal = ghost_icon_button(theme, "hosts-terminal", "terminal.svg", "Terminal")
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.open_first_host_of_type(HostType::Local, cx)
-            }));
-        let serial = ghost_icon_button(theme, "hosts-serial", "serial.svg", "Serial")
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.open_first_host_of_type(HostType::Serial, cx)
-            }));
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .flex_shrink_0()
+                    .child(
+                        Button::new("Create a workspace")
+                            .secondary()
+                            .size(ButtonSize::Small)
+                            .disabled(!has_selection)
+                            .on_click(
+                                theme,
+                                cx.listener(|this, _event, _window, cx| this.create_workspace(cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("Restore")
+                            .primary()
+                            .size(ButtonSize::Small)
+                            .disabled(!has_selection)
+                            .on_click(
+                                theme,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.restore_selected(cx)
+                                }),
+                            ),
+                    ),
+            );
 
         div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .flex_shrink_0()
-            .child(split)
-            .child(terminal)
-            .child(serial)
-    }
-
-    /// The header band with the toolbar as its first child
-    /// (`HostsFiltersHeader-fc79316f.js:423`).
-    ///
-    /// PORT-TODO: in the 300px sidebar the responsive search / tags / sort
-    /// cluster can clip — the original hides those controls by width
-    /// (`width-81 >= 250/200/100`); the responsive rules are not modelled yet.
-    fn filters_header(&self, theme: TermiusTheme, menu_open: bool, cx: &mut Context<Self>) -> Div {
-        FiltersHeader::new("Find a host or ssh user@hostname...")
-            .action(self.toolbar(theme, menu_open, cx))
-            .element(theme)
-    }
-
-    /// The group breadcrumb (`GroupPath`, `reconnectSaga:126512`).
-    fn breadcrumb(
-        &self,
-        theme: TermiusTheme,
-        crumbs: &[(Option<String>, String)],
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let last = crumbs.len().saturating_sub(1);
-        let mut row = div()
-            .flex()
-            .flex_row()
-            .flex_nowrap()
-            .items_center()
-            .px(px(30.))
-            .pt(px(20.))
-            .text_color(theme.title)
-            .font_family(UI_FONT).text_size(px(14.))
-            .font_weight(FontWeight(450.0))
-            .line_height(px(20.));
-
-        for (index, (id, title)) in crumbs.iter().enumerate() {
-            let is_last = index == last;
-            let color = if is_last { theme.title } else { theme.accent };
-            let target = id.clone();
-            let item = div()
-                .id(SharedString::from(format!("crumb-{index}")))
-                .flex()
-                .items_center()
-                .flex_shrink_0()
-                .pr(px(if is_last { 0. } else { 10. }))
-                .text_color(color)
-                .whitespace_nowrap()
-                .child(SharedString::from(title.clone()));
-            let item = if is_last {
-                item
-            } else {
-                item.on_click(
-                    cx.listener(move |this, _event, _window, cx| this.navigate_to(target.clone(), cx)),
-                )
-            };
-            row = row.child(item);
-            if !is_last {
-                row = row.child(
-                    crate::icon("chevron.svg")
-                        .w(px(10.))
-                        .h(px(16.))
-                        .pr(px(10.))
-                        .text_color(theme.accent)
-                        .with_transformation(Transformation::rotate(radians(
-                            -std::f32::consts::FRAC_PI_2,
-                        ))),
-                );
-            }
-        }
-        row
-    }
-
-    /// The split button's dropdown (`_main.js:65858`): New Group / Import /
-    /// AWS / DigitalOcean / Azure.
-    fn new_host_menu(&self, theme: TermiusTheme, cx: &mut Context<Self>) -> Div {
-        div()
-            .absolute()
-            .top(px(QUICK_CONNECT_HEIGHT + HEADER_HEIGHT))
-            .left(px(12.))
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .p(px(6.))
-            .w(px(220.))
-            .rounded(px(theme.corner_radius_medium))
-            .border_1()
-            .border_color(theme.border_light)
-            .bg(theme.card_a)
+            .items_start()
+            .gap(px(10.))
+            .w_full()
+            .p(px(15.))
+            .rounded(px(CARD_RADIUS))
+            .bg(theme.card_a) // --foreground
             .text_color(theme.title)
-            // PORT-TODO: New Group / Import / integrations have no
-            // `TermiusState` API yet; each item just dismisses the menu.
-            .child(
-                menu_item(theme, "hosts-menu-new-group", "createGroup.svg", "New Group", false)
-                    .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                        this.close_new_menu(cx)
-                    })),
-            )
-            .child(
-                menu_item(theme, "hosts-menu-import", "import.svg", "Import", false).on_click(
-                    cx.listener(|this, _event: &ClickEvent, _window, cx| this.close_new_menu(cx)),
-                ),
-            )
-            .child(
-                menu_item(theme, "hosts-menu-aws", "AWS.svg", "AWS Integration", true).on_click(
-                    cx.listener(|this, _event: &ClickEvent, _window, cx| this.close_new_menu(cx)),
-                ),
-            )
-            .child(
-                menu_item(
-                    theme,
-                    "hosts-menu-do",
-                    "DigitalOcean.svg",
-                    "DigitalOcean Integration",
-                    true,
-                )
-                .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.close_new_menu(cx)
-                })),
-            )
-            .child(
-                menu_item(theme, "hosts-menu-azure", "azure.svg", "Azure Integration", true)
-                    .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                        this.close_new_menu(cx)
-                    })),
-            )
+            .child(header)
+            .child(list)
     }
 }
 
@@ -969,140 +918,64 @@ impl Render for HostList {
 
         // Resolve everything the rows need while the state borrow is held, then
         // drop it before any `cx.listener` below registers against `cx`.
-        let (rows, selected, loading, load_error, crumbs, menu_open) = {
+        let (rows, loading, load_error) = {
             let state = self.state.read(cx);
-            let rows = flatten_entities(
-                &state.library.groups,
-                &state.library.hosts,
-                self.current_group.as_deref(),
-            );
-            let crumbs = group_path(&state.library.groups, self.current_group.as_deref());
             (
-                rows,
-                state.selected_host.clone(),
+                recent_rows(&state.library.hosts, &state.library.groups),
                 state.library_loading,
                 state.library_error.clone(),
-                crumbs,
-                self.new_menu_open,
             )
         };
         let rows_empty = rows.is_empty();
+        let has_selection = !self.selection.is_empty();
 
-        let mut root = div()
-            .relative()
+        // `i_e.contentWrapper`: max-width 720px, `margin: 0 auto`, gap 20px.
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(20.))
+            .w_full()
+            .max_w(px(CONTENT_MAX_WIDTH))
+            .mx_auto();
+
+        // `Nwe`: the search field.
+        content = content.child(search_bar(theme));
+
+        if rows_empty && !loading && load_error.is_none() {
+            // `Bwe`: the "Recent sessions" empty screen.
+            content = content.child(
+                div().w_full().h(px(260.)).child(
+                    EmptyState::new(
+                        "Recent sessions",
+                        "Your recent sessions will be visible here.",
+                    )
+                    .element(theme),
+                ),
+            );
+        } else {
+            if loading {
+                content = content.child(status_line(theme, "Loading…", false));
+            }
+            if let Some(error) = load_error {
+                content = content.child(status_line(theme, &error, true));
+            }
+            content = content.child(self.recent_card(theme, &rows, has_selection, cx));
+        }
+
+        // `i_e.root`: --entity-grid-background, padding 40px 20px, scrollable.
+        div()
             .flex()
             .flex_col()
             .size_full()
-            .overflow_hidden()
-            .bg(theme.sidebar_background)
-            .text_color(theme.title);
-
-        // ----- Quick-Connect bar (above the header) -------------------------
-        root = root.child(quick_connect_bar(theme));
-
-        // ----- header: New-Entity toolbar + search / tags / sort ------------
-        root = root.child(self.filters_header(theme, menu_open, cx));
-
-        // ----- list, or the empty screen ------------------------------------
-        if rows_empty && !loading && load_error.is_none() {
-            root = root.child(empty_hosts_card(theme));
-        } else {
-            let mut list = div()
-                .id("host-list-scroll")
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(0.))
-                .overflow_y_scroll()
-                .pb(px(12.));
-
-            list = list.child(self.breadcrumb(theme, &crumbs, cx));
-
-            if loading {
-                list = list.child(
-                    div().px(px(30.)).py(px(8.)).child(
-                        text::R12S.style(div()).text_color(theme.muted).child(SharedString::from(
-                            if rows_empty { "Loading…" } else { "Refreshing…" },
-                        )),
-                    ),
-                );
-            }
-            if let Some(error) = load_error {
-                list = list.child(
-                    div().px(px(30.)).py(px(8.)).child(
-                        text::R12S
-                            .style(div())
-                            .text_color(theme.danger)
-                            .child(SharedString::from(error)),
-                    ),
-                );
-            }
-
-            let mut shown_groups = false;
-            let mut shown_hosts = false;
-            for (index, row) in rows.iter().enumerate() {
-                match row {
-                    ListRow::Group { id, title, host_count } => {
-                        if !shown_groups {
-                            list = list.child(section_title(theme, "Groups"));
-                            shown_groups = true;
-                        }
-                        let group_id = id.clone();
-                        list = list.child(
-                            EntityRow::new(title.clone(), group_subtitle(*host_count), "Group.svg")
-                                .element(theme)
-                                .on_click(cx.listener(move |this, _event, _window, cx| {
-                                    this.open_group(&group_id, cx);
-                                })),
-                        );
-                    }
-                    ListRow::Host { id, label, subtitle } => {
-                        if !shown_hosts {
-                            list = list.child(section_title(theme, "Hosts"));
-                            shown_hosts = true;
-                        }
-                        let is_selected = selected.as_deref() == Some(id.as_str());
-                        let icon_name = self
-                            .state
-                            .read(cx)
-                            .library
-                            .host(id)
-                            .map(host_icon)
-                            .unwrap_or("host.svg");
-                        let host_id = id.clone();
-                        list = list.child(
-                            EntityRow::new(label.clone(), subtitle.clone(), icon_name)
-                                .selected(is_selected)
-                                .element(theme)
-                                .on_click(cx.listener(
-                                    move |this, event: &ClickEvent, _window, cx| {
-                                        this.cursor = Some(index);
-                                        if click_count(event) >= 2 {
-                                            this.state.update(cx, |state, cx| {
-                                                state.open_connection(&host_id, cx)
-                                            });
-                                        } else {
-                                            let id = host_id.clone();
-                                            this.state.update(cx, |state, cx| {
-                                                state.select_host(Some(id), cx)
-                                            });
-                                        }
-                                    },
-                                )),
-                        );
-                    }
-                }
-            }
-
-            root = root.child(list);
-        }
-
-        // ----- split-button dropdown (paints above the list) ----------------
-        if menu_open {
-            root = root.child(self.new_host_menu(theme, cx));
-        }
-
-        root.track_focus(&self.focus)
+            .overflow_y_scroll()
+            .bg(entity_grid_bg(theme))
+            .text_color(theme.title)
+            .pt(px(40.))
+            .pb(px(40.))
+            .px(px(20.))
+            .child(content)
+            .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.handle_key(event, cx);
             }))
@@ -1374,5 +1247,54 @@ mod tests {
         assert_eq!(next_host_in_list(&rows, Some(1), -1), None);
         assert_eq!(next_host_in_list(&rows, None, -1), Some(2));
         assert_eq!(next_host_in_list(&[], None, 1), None);
+    }
+
+    #[test]
+    fn os_color_maps_system_palette() {
+        assert_eq!(os_color("ubuntu"), Some(gpui::rgb(0xe9_54_20)));
+        assert_eq!(os_color("macOS"), Some(gpui::rgb(0x49_a3_f2)));
+        assert_eq!(os_color("Windows"), Some(gpui::rgb(0x00_a1_f1)));
+        assert_eq!(os_color("unknown"), None);
+        assert_eq!(os_color(""), None);
+    }
+
+    #[test]
+    fn host_label_falls_back_to_address() {
+        let mut host = host("h", "web-1", &[]);
+        assert_eq!(host_label(&host), "web-1");
+        host.label.clear();
+        assert_eq!(host_label(&host), "web-1.test");
+        host.hostname.clear();
+        assert_eq!(host_label(&host), "");
+    }
+
+    #[test]
+    fn vault_label_is_personal_plus_first_group() {
+        let groups = [group("g1", "Production", None)];
+        let mut host = host("h", "web", &[]);
+        assert_eq!(vault_label(&host, &groups), "Personal");
+        host.group_ids = vec!["g1".to_owned()];
+        assert_eq!(vault_label(&host, &groups), "Personal / Production");
+        // A dangling group id degrades to "Personal".
+        host.group_ids = vec!["missing".to_owned()];
+        assert_eq!(vault_label(&host, &groups), "Personal");
+    }
+
+    #[test]
+    fn recent_rows_sort_by_label_and_tile_local_hosts() {
+        let hosts = [
+            host("h2", "zulu", &[]),
+            host("h1", "alpha", &[]),
+        ];
+        let mut local = host("h3", "mid", &[]);
+        local.host_type = HostType::Local;
+        let mut all = hosts.to_vec();
+        all.push(local);
+        let rows = recent_rows(&all, &[]);
+        let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(labels, ["alpha", "mid", "zulu"]);
+        // Local hosts get the Apple tile on the apple system colour.
+        let mid = rows.iter().find(|row| row.label == "mid");
+        assert!(matches!(mid, Some(row) if row.icon == "Apple.svg"));
     }
 }

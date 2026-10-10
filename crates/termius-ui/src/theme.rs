@@ -8,12 +8,28 @@
 //! The theme is registered as a GPUI [`Global`] so any view can read it with
 //! [`theme_of`]; `termius_ui::views::init` installs the dark variant.
 
-use gpui::{px, App, FontWeight, Global, Rgba, Styled};
+use gpui::{px, App, FontWeight, Global, Rgba, Styled, WindowAppearance};
 
 use termius_terminal::{StyledCell, TerminalColor};
 
 /// The UI font family (Lineto Circular, embedded via [`crate::assets`]).
 pub use crate::assets::UI_FONT;
+
+/// `--horizontal-tabs-height` — the top strip / spacer height (`51px`).
+///
+/// Source: `analysis/termius-theme.json` (`--horizontal-tabs-height: 51px`,
+/// dark + light) and `analysis/recon/00-shell.md` §4/§5 (`qDe` spacer height,
+/// `paneSplit` `calc(100% - 51px)`).
+pub const HORIZONTAL_TABS_HEIGHT: f32 = 51.0;
+
+/// `pane1.visible` width — the left section-nav rail (`185px`).
+///
+/// Source: `analysis/recon/00-shell.md` §5 (`pane1.visible { width: 185px }`).
+pub const LEFT_PANEL_WIDTH: f32 = 185.0;
+
+/// `pane1.visible` width under `@media (max-width: 800px)` — the icon-only
+/// rail (`68px`). Source: `analysis/recon/00-shell.md` §5.
+pub const LEFT_PANEL_COMPACT_WIDTH: f32 = 68.0;
 
 /// One entry of the original Termius typography scale.
 ///
@@ -196,6 +212,51 @@ pub struct TermiusTheme {
     pub corner_radius_small: f32,
     pub corner_radius_medium: f32,
     pub corner_radius_large: f32,
+    // --- further recovered tokens (additive; analysis/termius-theme.json) ------
+    /// `--surface-lowest` (dark `--dark-grey-1` / light `--light-grey-5`).
+    pub surface_lowest: Rgba,
+    /// `--surface-base` (dark `--dark-grey-2` / light `--light-grey-6`).
+    pub surface_base: Rgba,
+    /// `--surface-high` (dark `--dark-grey-3` / light `--light-grey-7`).
+    pub surface_high: Rgba,
+    /// `--surface-highest` (dark `--dark-grey-4` / light `--white`).
+    pub surface_highest: Rgba,
+    /// `--entity-item-background` (dark `--dark-grey-3` / light `--white`).
+    pub entity_item_background: Rgba,
+    /// `--list-hover` (dark `--dark-grey-5` / light `--light-grey-5`).
+    pub list_hover: Rgba,
+    /// `--list-hover-hover` (dark `--dark-grey-4` / light `--light-grey-5`).
+    pub list_hover_hover: Rgba,
+    /// `--list-select` (dark `--dark-grey-4` / light `--light-grey-4`).
+    pub list_select: Rgba,
+    /// `--text-primary` (dark `--white` / light `--dark-grey-1`).
+    pub text_primary: Rgba,
+    /// `--text-secondary` (dark `--dark-grey-7` / light `--light-grey-1`).
+    pub text_secondary: Rgba,
+    /// `--text-color` — the left-panel section-row label colour
+    /// (`00-shell.md` §7, `sFe.root`): dark `--white` / light `--dark-grey-1`.
+    pub text_color: Rgba,
+    /// `--main-color` — the `p`-role typography colour
+    /// (`01-design-system.md` §0.2): dark `--white` / light `--dark-grey-4`.
+    pub main_color: Rgba,
+    /// `--background-color` — the left panel's own surface
+    /// (`00-shell.md` §6, `dFe.root`): dark `--dark-grey-3` /
+    /// light `--light-grey-7`.
+    pub background_color: Rgba,
+    /// `--background-hover-color` — section-row hover (`00-shell.md` §7,
+    /// `sFe.root`): dark `--dark-grey-4` / light `--light-grey-6`.
+    pub background_hover_color: Rgba,
+    /// `--background-selected-color` — section-row selected (`00-shell.md` §7,
+    /// `sFe.root`): dark `--dark-grey-5` / light `--light-grey-5`.
+    pub background_selected_color: Rgba,
+    /// `--dark-blue-solid` (the same `#004878` in both modes).
+    pub dark_blue_solid: Rgba,
+    /// `--foreground` — the dialog-panel surface (`01-design-system.md` §5.1,
+    /// `DialogPanel`): dark `--dark-grey-3` / light `--light-grey-7`.
+    ///
+    /// Distinct from [`Self::foreground`], which is the `--c-title` *text*
+    /// role; this is the `--foreground` *surface* token.
+    pub dialog_foreground: Rgba,
 }
 
 impl Global for TermiusTheme {}
@@ -258,6 +319,23 @@ impl TermiusTheme {
             corner_radius_small: 5.0,
             corner_radius_medium: 10.0,
             corner_radius_large: 15.0,
+            surface_lowest: rgb(0x14, 0x17, 0x29),  // --surface-lowest (dark-grey-1)
+            surface_base: rgb(0x1d, 0x20, 0x33),    // --surface-base (dark-grey-2)
+            surface_high: rgb(0x28, 0x2b, 0x3d),    // --surface-high (dark-grey-3)
+            surface_highest: rgb(0x32, 0x36, 0x4a), // --surface-highest (dark-grey-4)
+            entity_item_background: rgb(0x28, 0x2b, 0x3d), // --entity-item-background
+            list_hover: rgb(0x3e, 0x42, 0x57),      // --list-hover (dark-grey-5)
+            list_hover_hover: rgb(0x32, 0x36, 0x4a),// --list-hover-hover (dark-grey-4)
+            list_select: rgb(0x32, 0x36, 0x4a),     // --list-select (dark-grey-4)
+            text_primary: rgb(0xff, 0xff, 0xff),    // --text-primary (white)
+            text_secondary: rgb(0x8d, 0x91, 0xa5),  // --text-secondary (dark-grey-7)
+            text_color: rgb(0xff, 0xff, 0xff),      // --text-color (white)
+            main_color: rgb(0xff, 0xff, 0xff),      // --main-color (white)
+            background_color: rgb(0x28, 0x2b, 0x3d), // --background-color (dark-grey-3)
+            background_hover_color: rgb(0x32, 0x36, 0x4a),    // --background-hover-color
+            background_selected_color: rgb(0x3e, 0x42, 0x57), // --background-selected-color
+            dark_blue_solid: rgb(0x00, 0x48, 0x78), // --dark-blue-solid
+            dialog_foreground: rgb(0x28, 0x2b, 0x3d), // --foreground (dark-grey-3)
         }
     }
 
@@ -318,6 +396,23 @@ impl TermiusTheme {
             corner_radius_small: 5.0,
             corner_radius_medium: 10.0,
             corner_radius_large: 15.0,
+            surface_lowest: rgb(0xe6, 0xeb, 0xed),  // --surface-lowest (light-grey-5)
+            surface_base: rgb(0xed, 0xf1, 0xf2),    // --surface-base (light-grey-6)
+            surface_high: rgb(0xf7, 0xf9, 0xfa),    // --surface-high (light-grey-7)
+            surface_highest: rgb(0xff, 0xff, 0xff), // --surface-highest (white)
+            entity_item_background: rgb(0xff, 0xff, 0xff), // --entity-item-background
+            list_hover: rgb(0xe6, 0xeb, 0xed),      // --list-hover (light-grey-5)
+            list_hover_hover: rgb(0xe6, 0xeb, 0xed),// --list-hover-hover (light-grey-5)
+            list_select: rgb(0xd5, 0xdd, 0xe0),     // --list-select (light-grey-4)
+            text_primary: rgb(0x14, 0x17, 0x29),    // --text-primary (dark-grey-1)
+            text_secondary: rgb(0x79, 0x8c, 0x94),  // --text-secondary (light-grey-1)
+            text_color: rgb(0x14, 0x17, 0x29),      // --text-color (dark-grey-1)
+            main_color: rgb(0x32, 0x36, 0x4a),      // --main-color (dark-grey-4)
+            background_color: rgb(0xf7, 0xf9, 0xfa), // --background-color (light-grey-7)
+            background_hover_color: rgb(0xed, 0xf1, 0xf2),    // --background-hover-color
+            background_selected_color: rgb(0xe6, 0xeb, 0xed), // --background-selected-color
+            dark_blue_solid: rgb(0x00, 0x48, 0x78), // --dark-blue-solid
+            dialog_foreground: rgb(0xf7, 0xf9, 0xfa), // --foreground (light-grey-7)
         }
     }
 
@@ -326,6 +421,55 @@ impl TermiusTheme {
         match mode {
             ThemeMode::Dark => Self::dark(),
             ThemeMode::Light => Self::light(),
+        }
+    }
+
+    /// The palette matching a window/system appearance.
+    ///
+    /// `VibrantLight` maps to [`Self::light`] and `VibrantDark` to
+    /// [`Self::dark`] — the same mapping gpui's own `Colors::for_appearance`
+    /// uses (`gpui-0.2.2/src/colors.rs:36`).
+    pub fn for_appearance(appearance: WindowAppearance) -> Self {
+        match appearance {
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
+        }
+    }
+
+    /// The palette following the current window/system appearance.
+    ///
+    /// Reads [`App::window_appearance`] (gpui 0.2.2 `app.rs:1029`, reachable
+    /// straight from `&App` — no `Window` needed). The shell should select the
+    /// theme with this and install it, e.g. in `AppShell::render` or an
+    /// appearance observer:
+    ///
+    /// ```ignore
+    /// let theme = TermiusTheme::system(cx); // cx: &App
+    /// cx.set_global(theme);
+    /// ```
+    ///
+    /// If only a [`Window`](gpui::Window) is on hand, use
+    /// `TermiusTheme::for_appearance(window.appearance())` instead.
+    pub fn system(cx: &App) -> Self {
+        Self::for_appearance(cx.window_appearance())
+    }
+
+    /// The top-strip chrome colour — dark in *both* app themes.
+    ///
+    /// Sources:
+    /// * `analysis/recon/00-shell.md` §10 (`yDe` / `CDe.horizontalTabs`): the
+    ///   strip's `--background-color` is `--dark-grey-3` (`#282b3d`) in the
+    ///   light app theme and `--dark-grey-1` (`#141729`) under
+    ///   `.termius-dark-theme`.
+    /// * `00-shell.md` §4 (`qDe.colored`): the spacer under the strip paints
+    ///   `themeColors.backgroundColor` — the terminal chrome colour. Its
+    ///   default split-view scheme is always `"Termius Dark"`
+    ///   (`splitViewTheme = colorSchemes["termius dark"]`, `backgroundColor`
+    ///   `#141729` = `--dark-grey-1`), so the chrome stays dark in both modes.
+    pub fn chrome_background(&self) -> Rgba {
+        match self.mode {
+            ThemeMode::Dark => rgb(0x14, 0x17, 0x29),  // --dark-grey-1
+            ThemeMode::Light => rgb(0x28, 0x2b, 0x3d), // --dark-grey-3
         }
     }
 
@@ -471,6 +615,87 @@ mod tests {
         assert_ne!(dark.ansi, light.ansi);
         assert_eq!(dark.toggled().mode, ThemeMode::Light);
         assert_eq!(light.toggled().mode, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn for_appearance_maps_to_palette() {
+        assert_eq!(
+            TermiusTheme::for_appearance(WindowAppearance::Light).mode,
+            ThemeMode::Light
+        );
+        assert_eq!(
+            TermiusTheme::for_appearance(WindowAppearance::VibrantLight).mode,
+            ThemeMode::Light
+        );
+        assert_eq!(
+            TermiusTheme::for_appearance(WindowAppearance::Dark).mode,
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            TermiusTheme::for_appearance(WindowAppearance::VibrantDark).mode,
+            ThemeMode::Dark
+        );
+    }
+
+    #[test]
+    fn new_tokens_are_complete_and_mode_specific() {
+        let dark = TermiusTheme::dark();
+        let light = TermiusTheme::light();
+        // Every newly added surface/entity/list/text token differs between modes.
+        let pairs = [
+            (dark.surface_lowest, light.surface_lowest),
+            (dark.surface_base, light.surface_base),
+            (dark.surface_high, light.surface_high),
+            (dark.surface_highest, light.surface_highest),
+            (dark.entity_item_background, light.entity_item_background),
+            (dark.list_hover, light.list_hover),
+            (dark.list_hover_hover, light.list_hover_hover),
+            (dark.list_select, light.list_select),
+            (dark.text_primary, light.text_primary),
+            (dark.text_secondary, light.text_secondary),
+            (dark.text_color, light.text_color),
+            (dark.main_color, light.main_color),
+            (dark.background_color, light.background_color),
+            (dark.background_hover_color, light.background_hover_color),
+            (dark.background_selected_color, light.background_selected_color),
+            (dark.dialog_foreground, light.dialog_foreground),
+        ];
+        for (d, l) in pairs {
+            assert_ne!(d, l);
+        }
+        // Spot-check exact token values (analysis/termius-theme.json).
+        assert_eq!(dark.surface_high, rgb(0x28, 0x2b, 0x3d));
+        assert_eq!(light.surface_high, rgb(0xf7, 0xf9, 0xfa));
+        assert_eq!(dark.text_primary, rgb(0xff, 0xff, 0xff));
+        assert_eq!(light.text_primary, rgb(0x14, 0x17, 0x29));
+        assert_eq!(dark.list_hover, rgb(0x3e, 0x42, 0x57));
+        assert_eq!(light.list_select, rgb(0xd5, 0xdd, 0xe0));
+        assert_eq!(light.text_secondary, rgb(0x79, 0x8c, 0x94));
+        assert_eq!(dark.main_color, rgb(0xff, 0xff, 0xff));
+        assert_eq!(light.main_color, rgb(0x32, 0x36, 0x4a));
+        // `--dark-blue-solid` is the one mode-invariant token.
+        assert_eq!(dark.dark_blue_solid, light.dark_blue_solid);
+        assert_eq!(dark.dark_blue_solid, rgb(0x00, 0x48, 0x78));
+    }
+
+    #[test]
+    fn chrome_is_dark_in_both_modes() {
+        // Dark: --dark-grey-1; light: --dark-grey-3 — both dark.
+        let dark = TermiusTheme::dark().chrome_background();
+        let light = TermiusTheme::light().chrome_background();
+        assert_eq!(dark, rgb(0x14, 0x17, 0x29));
+        assert_eq!(light, rgb(0x28, 0x2b, 0x3d));
+        // Every channel stays below mid-grey in both modes.
+        for c in [dark, light] {
+            assert!(c.r < 0.5 && c.g < 0.5 && c.b < 0.5);
+        }
+    }
+
+    #[test]
+    fn shell_geometry_constants_match_the_recon() {
+        assert_eq!(HORIZONTAL_TABS_HEIGHT, 51.0);
+        assert_eq!(LEFT_PANEL_WIDTH, 185.0);
+        assert_eq!(LEFT_PANEL_COMPACT_WIDTH, 68.0);
     }
 
     #[test]
